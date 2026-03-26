@@ -12,6 +12,7 @@ venv/
 # Backend local state
 backend/.env
 backend/assistant.db
+backend/identifier.sqlite
 backend/uploads/
 
 # IDE
