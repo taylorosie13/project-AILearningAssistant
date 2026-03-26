@@ -1,0 +1,23 @@
+.DS_Store
+
+# Node
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Backend local state
+backend/.env
+backend/assistant.db
+backend/uploads/
+
+# IDE
+.idea/
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+DerivedData/
