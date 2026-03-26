@@ -109,6 +109,23 @@ struct ChatView: View {
                 .sheet(isPresented: $viewModel.showingCardEditor) {
                     CardEditSheet(viewModel: viewModel)
                 }
+                .alert(
+                    "操作失败",
+                    isPresented: Binding(
+                        get: { viewModel.errorMessage != nil },
+                        set: { isPresented in
+                            if !isPresented {
+                                viewModel.errorMessage = nil
+                            }
+                        }
+                    )
+                ) {
+                    Button("知道了", role: .cancel) {
+                        viewModel.errorMessage = nil
+                    }
+                } message: {
+                    Text(viewModel.errorMessage ?? "请稍后再试。")
+                }
                 .onChange(of: cameraImage) { oldImage, newImage in
                     if let image = newImage {
                         viewModel.selectedImages.append(image)
@@ -138,6 +155,14 @@ struct CardEditSheet: View {
                 Section("卡片标题") {
                     TextField("输入卡片标题...", text: $viewModel.editingCardTitle)
                 }
+                Section("分类") {
+                    TextField("例如：数学 / 物理 / 英语", text: $viewModel.editingCardCategory)
+                }
+                Section("标签") {
+                    TextField("用逗号分隔多个标签", text: $viewModel.editingCardTagsText)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
                 Section("卡片内容") {
                     TextEditor(text: $viewModel.editingCardContent)
                         .frame(minHeight: 200)
@@ -147,13 +172,24 @@ struct CardEditSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("取消") {
+                        viewModel.cancelCardEditing()
+                        dismiss()
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
                         viewModel.confirmSaveCard()
                     }
-                    .disabled(viewModel.editingCardTitle.isEmpty || viewModel.editingCardContent.isEmpty)
+                    .disabled(
+                        viewModel.editingCardTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                        viewModel.editingCardContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
+                }
+            }
+            .onDisappear {
+                if !viewModel.showingCardEditor {
+                    viewModel.cancelCardEditing()
                 }
             }
         }

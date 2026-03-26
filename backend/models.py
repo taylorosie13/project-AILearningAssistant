@@ -11,4 +11,13 @@ class ChatRequest(BaseModel):
 class KnowledgeCardCreate(BaseModel):
     title: str
     content: str
+    category: Optional[str] = None
+    tags: Optional[list[str]] = None
     source_session_id: Optional[str] = None
+
+
+class KnowledgeCardUpdate(BaseModel):
+    title: str
+    content: str
+    category: Optional[str] = None
+    tags: Optional[list[str]] = None

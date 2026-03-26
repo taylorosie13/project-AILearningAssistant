@@ -1,50 +1,108 @@
 # 项目开发进度与优化备忘录 (Development Log)
 
-**日期：** 2026-03-11
-**当前版本：** v1.2 (Sage & Paper UI Update)
+**最后更新：** 2026-03-26  
+**当前版本：** v1.6 (Knowledge Cards Management Update)
 
 ---
 
-## 1. 当前开发进度 (Current Progress)
+## 1. 当前开发进度
 
 ### ✅ 后端 (FastAPI + SQLite)
-- **多轮对话引擎**：支持 `session_id` 追踪，自动从数据库提取历史上下文并拼装给 Gemini。
-- **异步模型调用**：使用 `client.aio` (google-genai SDK)，解决了高并发下的请求阻塞问题。
-- **多模态支持**：实现了 `/upload/file` 接口，支持图片上传并由 Gemini 进行视觉推理。
-- **系统指令 (System Prompt)**：预设了教育专家角色，强制规范 LaTeX 数学公式和 Markdown 输出格式。
-- **会话管理**：实现了会话列表（带第一条消息预览）、获取消息详情、以及物理删除会话的 API。
+- **多轮对话**：支持 `session_id` 会话追踪，自动从 SQLite 拼装历史消息上下文发给 Gemini。
+- **多模态上传**：`/upload/file` 可接收图片并保存到 `backend/uploads`，聊天请求只接受该目录下的安全路径。
+- **文件安全收口**：后端对客户端传入文件路径做了安全解析，只允许使用 `uploads` 目录内文件，删除会话时也只清理该目录内的关联文件。
+- **数据库连接管理**：SQLite 连接统一切换到 context manager，用完即关，减少异常路径下的锁库风险。
+- **知识卡片接口**：已支持卡片列表获取、创建、删除、更新。
+- **知识卡片元信息**：`knowledge_cards` 现已支持 `category` 和 `tags` 字段；旧库启动时会自动补列。
+- **系统指令**：Gemini 仍使用教育助手系统提示，要求 Markdown 结构化输出与 LaTeX 公式规范。
 
-### ✅ 前端 (iOS SwiftUI)
-- **UI 架构**：采用“主界面 + 侧边抽屉”结构，适配 iOS 17+ `onChange` 及现代导航规范。
-- **森系学识主题**：确立了 `Sage & Paper` 配色方案，采用不对称圆角气泡和温暖的纸质背景。
-- **印刷级公式渲染**：集成 MathJax 3.0，支持复杂的 LaTeX 公式解析。
-- **智能排版**：解决了中文“避头尾”（标点不出行首）问题，支持两端对齐。
-- **交互引导**：为长公式增加了卡片容器背景及“粘性渐变遮罩”滑动引导。
-- **多模态集成**：支持系统相册选择 (`PhotosPicker`) 和原生相机拍照 (`ImagePicker`)。
-
----
-
-## 2. 待解决的细节与潜在优化 (Optimization Backlog)
-
-### 🛠️ 性能与资源 (Performance)
-- **物理文件清理**：当前删除会话只删除了数据库记录，未删除 `uploads/` 目录下的物理图片/音频文件。
-- **WebView 内存优化**：长对话中大量的 `WKWebView` 实例可能占用较多内存，需考虑重用机制或视图可见性优化。
-- **上下文窗口管理**：目前全量发送历史记录，需引入“滑动窗口”（如仅发送最近 10 条）以应对超长对话。
-
-### 🎨 交互体验 (UI/UX)
-- **长按上下文菜单**：为聊天内容增加长按菜单（复制文本、收藏为知识卡片、保存图片）。
-- **图片全屏预览**：点击聊天中的图片应能进入全屏预览模式。
-- **iPad 适配**：针对 iPad 大屏优化侧边栏为常驻模式，而非抽屉式。
-- **错误恢复**：增加更友好的网络错误 Toast 提示，支持一键重试。
-
-### 🚀 功能扩展 (Future Features)
-- **知识卡片 (Knowledge Cards)**：实现核心知识点的一键沉淀，提供专门的“卡片盒”查看页面。
-- **语音功能 (TTS/STT)**：集成文字转语音（播报解答）和语音输入。
-- **文档解析**：支持 PDF、Word 等课件的上传与长文本总结。
+### ✅ iOS 客户端 (SwiftUI)
+- **主界面**：聊天页、侧边抽屉、会话列表、卡片盒均可正常使用。
+- **多模态输入**：支持相册选择和相机拍照上传。
+- **Markdown/LaTeX 渲染**：`WKWebView + MathJax + marked` 方案可正常渲染复杂数学内容。
+- **会话竞态处理**：快速切换历史会话时，旧请求不会覆盖新结果。
+- **发送竞态处理**：消息发送期间会阻止重复触发；上传图片也会绑定到正确的本地消息。
+- **网络层重构**：`NetworkManager` 已统一 URL 构造、请求发送和错误解码，并能透传 FastAPI 的 `detail`。
+- **错误提示**：聊天页已接入统一 `alert` 错误提示，失败时不再只依赖控制台日志。
+- **知识卡片管理**：
+  - 支持从聊天消息收藏为卡片
+  - 支持编辑已有卡片
+  - 支持分类与标签
+  - 支持按标题、正文、分类、标签搜索
+  - 支持按分类分组展示
+  - 支持点击分类标题折叠/展开
 
 ---
 
-## 3. 下一步操作建议 (Next Steps)
-1. **完善后端清理逻辑**：确保 `DELETE` 接口同步清理磁盘文件。
-2. **开启阶段四 (知识卡片)**：设计卡片数据模型并实现前端“收藏”手势。
-3. **增加图片全屏查看**：提高多模态互动的基础体验。
+## 2. 本轮已完成的重点改动
+
+### 后端
+- 将 `assistant.db` 路径改为相对 `backend` 目录的稳定路径。
+- 增加 `normalize_file_paths`、`resolve_upload_path`，收口文件访问范围。
+- `/cards` 相关接口增加分类和标签字段支持。
+- `knowledge_cards` 表支持自动补 `category` / `tags` 列。
+
+### iOS
+- `API_BASE_URL` 改为从 build settings / Info.plist 读取，不再硬编码在源码里。
+- `ChatMessage` 改为显式管理本地 `UUID`，用于稳定地更新发送中的消息。
+- `ChatViewModel` 增加统一的错误提示入口 `errorMessage`。
+- 卡片编辑弹窗支持两种模式：
+  - 新建卡片
+  - 编辑已有卡片
+- 知识卡片列表已升级为“资料库”形式，而不是简单长列表。
+
+---
+
+## 3. 当前代码结构与注意事项
+
+### 后端主要文件
+- [main.py](/Users/taylorosie13/project-AILearningAssistant/backend/main.py)
+  目前仍承担路由、Gemini 调用、文件处理和部分数据转换逻辑，后续仍可继续拆分为 service 层。
+- [database.py](/Users/taylorosie13/project-AILearningAssistant/backend/database.py)
+  负责 SQLite 初始化与连接管理。
+- [models.py](/Users/taylorosie13/project-AILearningAssistant/backend/models.py)
+  维护 Pydantic 请求模型。
+
+### iOS 主要文件
+- [ChatViewModel.swift](/Users/taylorosie13/project-AILearningAssistant/phone/AILearningAssistant/AILearningAssistant/ViewModels/ChatViewModel.swift)
+  当前承担聊天状态、会话状态、卡片状态和错误提示，后续体量继续增大时可再拆分。
+- [NetworkManager.swift](/Users/taylorosie13/project-AILearningAssistant/phone/AILearningAssistant/AILearningAssistant/Network/NetworkManager.swift)
+  已成为统一请求入口，后续新增接口建议继续复用当前模式。
+- [KnowledgeCardView.swift](/Users/taylorosie13/project-AILearningAssistant/phone/AILearningAssistant/AILearningAssistant/Views/KnowledgeCardView.swift)
+  已支持搜索、分组、折叠、编辑入口，是当前卡片功能的核心页面。
+
+### 当前已知注意点
+- `MarkdownView.swift` 仍依赖 CDN 加载 `MathJax` 和 `marked`，离线环境下可能影响公式/Markdown 渲染。
+- `backend/main.py` 仍然偏大，后续如果继续扩功能，建议尽早拆分。
+- 当前错误提示采用系统 `alert`，如果后续更重视流畅体验，可以改成非阻塞式 toast/banner。
+- `xcodebuild` 在当前终端环境里受 `xcode-select` 指向 CommandLineTools 影响；你本机 Xcode 手动 build 已成功。
+
+---
+
+## 4. 推荐的下一步开发方向
+
+### 优先推荐
+1. **知识卡片快速筛选**
+   增加顶部分类 chips，一键只看某个分类。
+2. **图片查看体验**
+   聊天图片支持点击全屏预览。
+3. **会话搜索**
+   在历史会话中按预览内容进行检索。
+
+### 第二梯队
+1. **知识卡片来源回跳**
+   从卡片回到原始会话。
+2. **卡片批量操作**
+   批量删除、批量调整分类。
+3. **后端分层**
+   将 Gemini 调用、数据库访问、文件处理继续拆到 service 层。
+
+---
+
+## 5. 本次提交前说明
+
+- 本次开发相关文件已覆盖后端与 iOS 两端。
+- 工作区里存在与本次开发无关的本地状态：
+  - 两张截图文件被删除
+  - `backend/identifier.sqlite` 为未跟踪文件
+- 提交 git 时建议不要把这些无关变更混进本次功能提交。

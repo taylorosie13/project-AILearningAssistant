@@ -7,7 +7,8 @@ import PhotosUI
 class ChatViewModel: ObservableObject {
     @Published var messages: [ChatMessage] = []
     @Published var inputText: String = ""
-    @Published var isLoading: Bool = false
+    @Published private(set) var isLoading: Bool = false
+    @Published var errorMessage: String?
     
     // 多模态支持：选中的图片
     @Published var selectedImages: [UIImage] = []
@@ -21,6 +22,9 @@ class ChatViewModel: ObservableObject {
     @Published var showingCardEditor: Bool = false
     @Published var editingCardTitle: String = ""
     @Published var editingCardContent: String = ""
+    @Published var editingCardCategory: String = ""
+    @Published var editingCardTagsText: String = ""
+    @Published var editingCardID: Int?
     
     // 追踪用户在 WebView 中选中的文本
     @Published var lastSelectedText: String = "" {
@@ -33,6 +37,16 @@ class ChatViewModel: ObservableObject {
     }
     // 核心锁定区：存储最后一次有效的选区内容
     private var lockedSelectedText: String = ""
+    private var isSendingMessage = false {
+        didSet { syncLoadingState() }
+    }
+    private var isLoadingSession = false {
+        didSet { syncLoadingState() }
+    }
+    private var activeSessionLoadID = UUID()
+    private var activeSendID = UUID()
+    private var sessionLoadTask: Task<Void, Never>?
+    private var sendTask: Task<Void, Never>?
     
     var currentSessionId: String? = nil
     
@@ -42,15 +56,19 @@ class ChatViewModel: ObservableObject {
             await loadKnowledgeCards()
         }
     }
+
+    private func presentError(_ error: Error, fallback: String) {
+        let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        errorMessage = message.isEmpty ? fallback : message
+        print("\(fallback): \(error)")
+    }
     
     func loadKnowledgeCards() async {
         do {
             let fetched = try await NetworkManager.shared.fetchKnowledgeCards()
-            await MainActor.run {
-                self.knowledgeCards = fetched
-            }
+            self.knowledgeCards = fetched
         } catch {
-            print("Error loading cards: \(error)")
+            presentError(error, fallback: "加载知识卡片失败")
         }
     }
 
@@ -58,6 +76,7 @@ class ChatViewModel: ObservableObject {
         // 优先使用传入的内容（如全量收藏），如果传入为空则尝试使用锁定的局部选区
         let finalContent = content.isEmpty ? lockedSelectedText : content
         guard !finalContent.isEmpty else { return }
+        editingCardID = nil
         
         // 智能生成初始标题
         let lines = finalContent.components(separatedBy: .newlines)
@@ -66,28 +85,53 @@ class ChatViewModel: ObservableObject {
         
         self.editingCardTitle = String(cleanTitle) + (firstLine.count > 15 ? "..." : "")
         self.editingCardContent = finalContent
+        self.editingCardCategory = ""
+        self.editingCardTagsText = ""
         
-        DispatchQueue.main.async {
-            self.showingCardEditor = true
-        }
+        self.showingCardEditor = true
+    }
+
+    func prepareExistingCardForEditing(_ card: KnowledgeCard) {
+        editingCardID = card.id
+        editingCardTitle = card.title
+        editingCardContent = card.content
+        editingCardCategory = card.category ?? ""
+        editingCardTagsText = card.tags.joined(separator: ", ")
+        showingCardEditor = true
     }
 
     func confirmSaveCard() {
-        let card = KnowledgeCardCreate(
-            title: editingCardTitle,
-            content: editingCardContent,
-            source_session_id: currentSessionId
-        )
+        let trimmedTitle = editingCardTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedContent = editingCardContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCategory = editingCardCategory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedTags = parseTags(from: editingCardTagsText)
+        guard !trimmedTitle.isEmpty, !trimmedContent.isEmpty else { return }
 
         Task {
             do {
-                _ = try await NetworkManager.shared.createKnowledgeCard(card: card)
-                await loadKnowledgeCards()
-                await MainActor.run {
-                    self.showingCardEditor = false
+                if let editingCardID {
+                    let card = KnowledgeCardUpdate(
+                        title: trimmedTitle,
+                        content: trimmedContent,
+                        category: trimmedCategory.isEmpty ? nil : trimmedCategory,
+                        tags: normalizedTags
+                    )
+                    _ = try await NetworkManager.shared.updateKnowledgeCard(cardId: editingCardID, card: card)
+                } else {
+                    let card = KnowledgeCardCreate(
+                        title: trimmedTitle,
+                        content: trimmedContent,
+                        category: trimmedCategory.isEmpty ? nil : trimmedCategory,
+                        tags: normalizedTags,
+                        source_session_id: currentSessionId
+                    )
+                    _ = try await NetworkManager.shared.createKnowledgeCard(card: card)
                 }
+                await loadKnowledgeCards()
+                resetCardEditor()
+                self.showingCardEditor = false
             } catch {
-                print("Error saving card: \(error)")
+                presentError(error, fallback: "保存知识卡片失败")
             }
         }
     }
@@ -97,13 +141,33 @@ class ChatViewModel: ObservableObject {
         prepareCardForEditing(content: message.content)
     }
 
+    func cancelCardEditing() {
+        resetCardEditor()
+        showingCardEditor = false
+    }
+
+    private func resetCardEditor() {
+        editingCardID = nil
+        editingCardTitle = ""
+        editingCardContent = ""
+        editingCardCategory = ""
+        editingCardTagsText = ""
+    }
+
+    private func parseTags(from rawValue: String) -> [String] {
+        rawValue
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
     func deleteKnowledgeCard(_ card: KnowledgeCard) {
         Task {
             do {
                 try await NetworkManager.shared.deleteKnowledgeCard(cardId: card.id)
                 await loadKnowledgeCards()
             } catch {
-                print("Error deleting card: \(error)")
+                presentError(error, fallback: "删除知识卡片失败")
             }
         }
     }
@@ -111,83 +175,90 @@ class ChatViewModel: ObservableObject {
     func loadSessions() async {
         do {
             let fetched = try await NetworkManager.shared.getSessions()
-            await MainActor.run {
-                self.sessions = fetched
-            }
+            self.sessions = fetched
         } catch {
-            print("Error loading sessions: \(error)")
+            presentError(error, fallback: "加载历史会话失败")
         }
     }
     
     func startNewChat() {
+        errorMessage = nil
+        activeSessionLoadID = UUID()
+        activeSendID = UUID()
+        sessionLoadTask?.cancel()
+        sendTask?.cancel()
         self.messages = []
         self.currentSessionId = nil
         self.selectedSessionId = nil
         self.inputText = ""
         self.selectedImages = []
+        self.isLoadingSession = false
+        self.isSendingMessage = false
     }
     
     func selectSession(_ session: ChatSession) {
+        errorMessage = nil
+        let loadID = UUID()
+        activeSessionLoadID = loadID
+        activeSendID = UUID()
+        sessionLoadTask?.cancel()
+        sendTask?.cancel()
         self.currentSessionId = session.id
         self.selectedSessionId = session.id
         self.messages = [] 
-        isLoading = true
+        isLoadingSession = true
+        isSendingMessage = false
         
-        Task {
+        sessionLoadTask = Task { [weak self] in
+            guard let self else { return }
             do {
                 let history = try await NetworkManager.shared.getSessionMessages(sessionId: session.id)
-                await MainActor.run {
-                    self.messages = history
-                    self.isLoading = false
-                }
+
+                guard !Task.isCancelled else { return }
+                guard loadID == self.activeSessionLoadID, self.selectedSessionId == session.id else { return }
+
+                self.messages = history
+                self.isLoadingSession = false
+            } catch is CancellationError {
+                return
             } catch {
-                print("Error selecting session: \(error)")
-                await MainActor.run { self.isLoading = false }
+                guard !Task.isCancelled else { return }
+                guard loadID == self.activeSessionLoadID else { return }
+
+                self.presentError(error, fallback: "加载会话记录失败")
+                self.isLoadingSession = false
             }
         }
     }
-    
-    func deleteSession(at indexSet: IndexSet) {
-        let sessionsToDelete = indexSet.map { sessions[$0] }
-        
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-            sessions.remove(atOffsets: indexSet)
-            for session in sessionsToDelete {
-                if session.id == self.currentSessionId {
-                    self.messages = []
-                    self.currentSessionId = nil
-                    self.selectedSessionId = nil
-                    self.inputText = ""
-                    self.selectedImages = []
-                }
-            }
-        }
-        
-        Task {
-            for session in sessionsToDelete {
-                do {
-                    try await NetworkManager.shared.deleteSession(sessionId: session.id)
-                } catch {
-                    print("Error deleting session: \(error)")
-                }
-            }
-        }
+
+    private func syncLoadingState() {
+        isLoading = isSendingMessage || isLoadingSession
     }
-    
+
     func sendMessage() {
-        guard !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !selectedImages.isEmpty else { return }
-        
-        let textToSend = inputText
+        guard !isSendingMessage else { return }
+        errorMessage = nil
+
+        let trimmedInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedInput.isEmpty || !selectedImages.isEmpty else { return }
+
+        let textToSend = trimmedInput
         let imagesToSend = selectedImages
+        let localMessageID = UUID()
+        let sendID = UUID()
+        activeSendID = sendID
         
-        let userMsg = ChatMessage(role: "user", content: textToSend, filePaths: nil)
+        let userMsg = ChatMessage(id: localMessageID, role: "user", content: textToSend, filePaths: nil)
         messages.append(userMsg)
         
         inputText = ""
         selectedImages = []
-        isLoading = true
+        isSendingMessage = true
         
-        Task {
+        sendTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.isSendingMessage = false }
+
             do {
                 var uploadedFilePaths: [String] = []
                 for (index, image) in imagesToSend.enumerated() {
@@ -199,29 +270,65 @@ class ChatViewModel: ObservableObject {
                         uploadedFilePaths.append(uploadResp.file_path)
                     }
                 }
+
+                guard !Task.isCancelled, sendID == self.activeSendID else { return }
                 
-                if !uploadedFilePaths.isEmpty {
-                    if let lastIndex = self.messages.lastIndex(where: { $0.role == "user" }) {
-                        self.messages[lastIndex].filePaths = uploadedFilePaths
-                    }
+                if !uploadedFilePaths.isEmpty,
+                   let messageIndex = self.messages.firstIndex(where: { $0.id == localMessageID }) {
+                    self.messages[messageIndex].filePaths = uploadedFilePaths
                 }
-                
+
                 let response = try await NetworkManager.shared.sendMessage(
                     prompt: textToSend,
-                    sessionId: currentSessionId,
+                    sessionId: self.currentSessionId,
                     filePaths: uploadedFilePaths.isEmpty ? nil : uploadedFilePaths
                 )
+
+                guard !Task.isCancelled, sendID == self.activeSendID else { return }
                 
                 self.currentSessionId = response.session_id
                 let aiMsg = ChatMessage(role: "model", content: response.response, filePaths: nil)
                 self.messages.append(aiMsg)
                 
+            } catch is CancellationError {
+                return
             } catch {
-                print("Error sending message: \(error)")
-                let errorMsg = ChatMessage(role: "model", content: "⚠️ 网络错误: \(error.localizedDescription)", filePaths: nil)
-                self.messages.append(errorMsg)
+                guard !Task.isCancelled, sendID == self.activeSendID else { return }
+                self.presentError(error, fallback: "发送消息失败")
             }
-            self.isLoading = false
+        }
+    }
+
+    func deleteSession(at indexSet: IndexSet) {
+        let sessionsToDelete = indexSet.map { sessions[$0] }
+        
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            sessions.remove(atOffsets: indexSet)
+            for session in sessionsToDelete {
+                if session.id == self.currentSessionId {
+                    activeSessionLoadID = UUID()
+                    activeSendID = UUID()
+                    sessionLoadTask?.cancel()
+                    sendTask?.cancel()
+                    self.messages = []
+                    self.currentSessionId = nil
+                    self.selectedSessionId = nil
+                    self.inputText = ""
+                    self.selectedImages = []
+                    self.isLoadingSession = false
+                    self.isSendingMessage = false
+                }
+            }
+        }
+        
+        Task {
+            for session in sessionsToDelete {
+                do {
+                    try await NetworkManager.shared.deleteSession(sessionId: session.id)
+                } catch {
+                    presentError(error, fallback: "删除会话失败")
+                }
+            }
         }
     }
     
