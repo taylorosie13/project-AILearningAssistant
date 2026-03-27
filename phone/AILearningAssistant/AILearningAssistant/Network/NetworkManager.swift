@@ -28,6 +28,7 @@ enum NetworkError: LocalizedError {
     case invalidURL(String)
     case invalidResponse
     case serverError(statusCode: Int, message: String)
+    case transportError(message: String)
 
     var errorDescription: String? {
         switch self {
@@ -37,6 +38,58 @@ enum NetworkError: LocalizedError {
             return "服务器返回了无法识别的响应。"
         case .serverError(_, let message):
             return message
+        case .transportError(let message):
+            return message
+        }
+    }
+}
+
+private extension NetworkError {
+    static func userFriendlyServerMessage(statusCode: Int, message: String) -> String {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowered = trimmed.lowercased()
+
+        if lowered.contains("libreoffice") {
+            return "后端暂时不能处理 Office 文档。请确认电脑上已安装 LibreOffice，并重启后端后再试。"
+        }
+
+        if lowered.contains("office 文件转 pdf 失败") {
+            return "文档转换失败。请确认文件没有损坏，或换一个文件后再试。"
+        }
+
+        if lowered.contains("网络连接被中断") || lowered.contains("ssl") || lowered.contains("connectionpool") {
+            return "文件已经在本地处理成功，但连接 Gemini 服务时中断了。请稍后重试，并检查当前网络或代理设置。"
+        }
+
+        if lowered.contains("文件类型与内容类型不匹配") {
+            return "这个文件的类型和内容不匹配。请重新导出文件后再上传。"
+        }
+
+        if lowered.contains("文件过大") {
+            return "文件太大了，请上传 20MB 以内的文件。"
+        }
+
+        if lowered.contains("暂不支持该文件类型上传") {
+            return "当前还不支持这种文件类型。请换成 PDF、图片、音频或常见文档格式后再试。"
+        }
+
+        if statusCode >= 500 {
+            return "后端处理这次请求时出了点问题，请稍后再试。"
+        }
+
+        return trimmed
+    }
+
+    static func userFriendlyTransportMessage(for error: URLError) -> String {
+        switch error.code {
+        case .notConnectedToInternet:
+            return "当前设备没有联网，请检查网络后再试。"
+        case .timedOut:
+            return "请求超时了，请稍后再试。"
+        case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost:
+            return "暂时连不上本地后端服务，请确认后端已经启动。"
+        default:
+            return "网络连接异常，请检查当前网络和本地后端服务。"
         }
     }
 }
@@ -58,13 +111,21 @@ class NetworkManager {
     }
 
     private func send(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        return try decodeResponse(data: data, response: response)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            return try decodeResponse(data: data, response: response)
+        } catch let error as URLError {
+            throw NetworkError.transportError(message: NetworkError.userFriendlyTransportMessage(for: error))
+        }
     }
 
     private func send(from url: URL) async throws -> Data {
-        let (data, response) = try await URLSession.shared.data(from: url)
-        return try decodeResponse(data: data, response: response)
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            return try decodeResponse(data: data, response: response)
+        } catch let error as URLError {
+            throw NetworkError.transportError(message: NetworkError.userFriendlyTransportMessage(for: error))
+        }
     }
 
     private func decodeResponse(data: Data, response: URLResponse) throws -> Data {
@@ -76,7 +137,8 @@ class NetworkManager {
             let apiError = try? JSONDecoder().decode(APIErrorResponse.self, from: data)
             let serverMessage = apiError?.detail.trimmingCharacters(in: .whitespacesAndNewlines)
             let fallbackMessage = HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
-            let message = (serverMessage?.isEmpty == false ? serverMessage! : fallbackMessage)
+            let rawMessage = (serverMessage?.isEmpty == false ? serverMessage! : fallbackMessage)
+            let message = NetworkError.userFriendlyServerMessage(statusCode: httpResponse.statusCode, message: rawMessage)
             throw NetworkError.serverError(statusCode: httpResponse.statusCode, message: message)
         }
 
@@ -100,7 +162,7 @@ class NetworkManager {
         return try JSONDecoder().decode(ChatResponse.self, from: data)
     }
     
-    func uploadFile(imageData: Data, fileName: String) async throws -> UploadResponse {
+    func uploadFile(data: Data, fileName: String, mimeType: String) async throws -> UploadResponse {
         let url = try makeURL(path: "/upload/file")
         let boundary = "Boundary-\(UUID().uuidString)"
         var request = URLRequest(url: url)
@@ -110,14 +172,17 @@ class NetworkManager {
         var body = Data()
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
-        body.append(imageData)
+        body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
+        body.append(data)
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
 
-        let (data, response) = try await URLSession.shared.upload(for: request, from: body)
-        let validatedData = try decodeResponse(data: data, response: response)
-    
-        return try JSONDecoder().decode(UploadResponse.self, from: validatedData)
+        do {
+            let (data, response) = try await URLSession.shared.upload(for: request, from: body)
+            let validatedData = try decodeResponse(data: data, response: response)
+            return try JSONDecoder().decode(UploadResponse.self, from: validatedData)
+        } catch let error as URLError {
+            throw NetworkError.transportError(message: NetworkError.userFriendlyTransportMessage(for: error))
+        }
     }
 
     func getSessions() async throws -> [ChatSession] {

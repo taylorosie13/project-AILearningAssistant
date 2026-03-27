@@ -1,7 +1,12 @@
-import os
-import uuid
-import shutil
 import json
+import os
+import re
+import asyncio
+import shutil
+import subprocess
+import tempfile
+import uuid
+import time
 from pathlib import Path
 from typing import cast, BinaryIO
 from fastapi import FastAPI, HTTPException, UploadFile, File
@@ -19,6 +24,50 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 UPLOADS_DIR = BASE_DIR / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
+MAX_UPLOAD_SIZE = 20 * 1024 * 1024
+TEMP_DIR_PREFIX = "office-to-pdf-"
+TEMP_DIR_TTL_SECONDS = 60 * 30
+ORPHAN_UPLOAD_TTL_SECONDS = 60 * 60 * 24
+
+GENERIC_ALLOWED_MIME_TYPES = {
+    "application/octet-stream",
+    "binary/octet-stream",
+}
+
+SUPPORTED_EXTENSIONS: dict[str, dict[str, object]] = {
+    ".jpg": {"kind": "image", "mime_types": {"image/jpeg"}},
+    ".jpeg": {"kind": "image", "mime_types": {"image/jpeg"}},
+    ".png": {"kind": "image", "mime_types": {"image/png"}},
+    ".heic": {"kind": "image", "mime_types": {"image/heic", "image/heif"}},
+    ".gif": {"kind": "image", "mime_types": {"image/gif"}},
+    ".webp": {"kind": "image", "mime_types": {"image/webp"}},
+    ".pdf": {"kind": "document", "mime_types": {"application/pdf"}},
+    ".doc": {"kind": "document", "mime_types": {"application/msword"}},
+    ".docx": {
+        "kind": "document",
+        "mime_types": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+    },
+    ".ppt": {"kind": "document", "mime_types": {"application/vnd.ms-powerpoint"}},
+    ".pptx": {
+        "kind": "document",
+        "mime_types": {"application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+    },
+    ".xls": {"kind": "document", "mime_types": {"application/vnd.ms-excel"}},
+    ".xlsx": {
+        "kind": "document",
+        "mime_types": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    },
+    ".txt": {"kind": "document", "mime_types": {"text/plain"}},
+    ".md": {"kind": "document", "mime_types": {"text/markdown", "text/plain"}},
+    ".m4a": {"kind": "audio", "mime_types": {"audio/m4a", "audio/mp4", "audio/x-m4a"}},
+    ".mp3": {"kind": "audio", "mime_types": {"audio/mpeg", "audio/mp3"}},
+    ".wav": {"kind": "audio", "mime_types": {"audio/wav", "audio/x-wav", "audio/wave"}},
+    ".aac": {"kind": "audio", "mime_types": {"audio/aac"}},
+    ".mp4": {"kind": "audio", "mime_types": {"audio/mp4", "video/mp4"}},
+}
+
+OFFICE_DOCUMENT_EXTENSIONS = {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
+TEXT_FILE_EXTENSIONS = {".txt", ".md"}
 
 # 在程序启动时执行数据库初始化
 init_db()
@@ -29,8 +78,19 @@ app = FastAPI(title="Multimodal Learning Assistant API")
 # 挂载静态文件目录，允许前端通过 /uploads/... 访问已上传的文件
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
+
+@app.on_event("startup")
+async def startup_cleanup_temp_files():
+    cleanup_result = run_temp_file_cleanup()
+    print(
+        "🧹 启动清理完成: "
+        f"{cleanup_result['removed_temp_dirs']} 个临时目录, "
+        f"{cleanup_result['removed_orphan_uploads']} 个孤儿上传文件"
+    )
+
 # 显式读取环境变量以进行调试和赋值
 api_key = os.getenv("GEMINI_API_KEY")
+model_name = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 
 if not api_key:
     print("❌警告:未能在环境变量中找到GEMINI_API_KEY。请检查.env文件是否存在且命名正确。")
@@ -46,6 +106,7 @@ else:
         3. 使用 Markdown 标题和列表来组织内容，使其清晰易读。
         4. 如果是文字交流，请保持亲切、专业的语气。"""
         print("✅Gemini API Client 初始化成功！已配置系统指令。")
+        print(f"✅ 当前 Gemini 模型: {model_name}")
     except Exception as e:
         print(f"❌初始化客户端失败:{e}")
         client = None
@@ -84,6 +145,305 @@ def resolve_upload_path(file_path: str) -> Path | None:
         return None
 
     return resolved_path
+
+
+def get_file_extension(file_name: str | None) -> str:
+    return Path(file_name or "").suffix.lower()
+
+
+def get_file_type_info(file_name: str | None) -> dict[str, object] | None:
+    extension = get_file_extension(file_name)
+    return SUPPORTED_EXTENSIONS.get(extension)
+
+
+def get_file_kind(file_name: str | None) -> str | None:
+    file_type_info = get_file_type_info(file_name)
+    return cast(str | None, file_type_info["kind"] if file_type_info else None)
+
+
+def sanitize_filename(file_name: str) -> str:
+    cleaned = Path(file_name).name.strip()
+    if not cleaned:
+        return ""
+
+    stem = Path(cleaned).stem
+    extension = Path(cleaned).suffix.lower()
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
+    safe_stem = safe_stem[:60] if safe_stem else "file"
+    return f"{safe_stem}{extension}"
+
+
+def parse_display_name_from_path(file_path: str) -> str:
+    file_name = Path(file_path).name
+    if "__" in file_name:
+        return file_name.split("__", 1)[1]
+    return file_name
+
+
+def build_file_upload_error(file_name: str) -> str:
+    extension = get_file_extension(file_name)
+    if extension in OFFICE_DOCUMENT_EXTENSIONS:
+        return (
+            f"文件 {file_name} 转换或上传失败。"
+            "请确认本机已安装 LibreOffice，并稍后重试。"
+        )
+    return f"文件 {file_name} 发送给模型时失败，请稍后重试。"
+
+
+def is_network_transport_error(error: Exception) -> bool:
+    lowered = str(error).lower()
+    network_markers = [
+        "ssl",
+        "eof occurred in violation of protocol",
+        "connectionpool",
+        "read timed out",
+        "temporarily unavailable",
+        "connection reset",
+        "broken pipe",
+        "max retries exceeded",
+    ]
+    return any(marker in lowered for marker in network_markers)
+
+
+def build_model_file_upload_error(file_name: str, error: Exception) -> HTTPException:
+    if is_network_transport_error(error):
+        return HTTPException(
+            status_code=502,
+            detail=(
+                f"文件《{file_name}》已经在本地处理成功，但上传到 Gemini 时网络连接被中断。"
+                "请稍后重试；如果持续出现，请检查当前网络、代理或 VPN 设置。"
+            )
+        )
+
+    extension = get_file_extension(file_name)
+    if extension in OFFICE_DOCUMENT_EXTENSIONS:
+        return HTTPException(
+            status_code=500,
+            detail=(
+                f"文件《{file_name}》已成功转成 PDF，但上传到 Gemini 失败。"
+                "请稍后重试，并查看后端日志中的具体错误信息。"
+            )
+        )
+
+    return HTTPException(status_code=500, detail=build_file_upload_error(file_name))
+
+
+def get_office_converter_command() -> str | None:
+    command = shutil.which("soffice") or shutil.which("libreoffice")
+    if command:
+        return command
+
+    macos_app_binary = Path("/Applications/LibreOffice.app/Contents/MacOS/soffice")
+    if macos_app_binary.exists():
+        return str(macos_app_binary)
+
+    return None
+
+
+def validate_files_for_model(file_paths: list[str]) -> None:
+    office_file_names = [
+        parse_display_name_from_path(file_path)
+        for file_path in file_paths
+        if get_file_extension(file_path) in OFFICE_DOCUMENT_EXTENSIONS
+    ]
+
+    if office_file_names and not get_office_converter_command():
+        joined_names = "、".join(office_file_names)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"这些 Office 文件需要先转换为 PDF 才能交给 Gemini：{joined_names}。"
+                "当前后端未检测到 LibreOffice，请先安装 LibreOffice 后再重试。"
+            )
+            )
+
+
+def is_path_expired(path: Path, ttl_seconds: int, now: float | None = None) -> bool:
+    current_time = now or time.time()
+    try:
+        return (current_time - path.stat().st_mtime) > ttl_seconds
+    except FileNotFoundError:
+        return False
+
+
+def extract_text_file_content(file_path: Path) -> str:
+    return file_path.read_text(encoding="utf-8", errors="ignore")
+
+
+def convert_office_file_to_pdf(file_path: Path) -> Path:
+    converter = get_office_converter_command()
+    if not converter:
+        raise HTTPException(status_code=400, detail="当前后端未检测到 LibreOffice，无法将 Office 文件转换为 PDF。")
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="office-to-pdf-"))
+    output_pdf = temp_dir / f"{file_path.stem}.pdf"
+    command = [
+        converter,
+        "--headless",
+        "--convert-to",
+        "pdf",
+        "--outdir",
+        str(temp_dir),
+        str(file_path),
+    ]
+
+    completed = subprocess.run(command, capture_output=True, text=True)
+    if completed.returncode != 0 or not output_pdf.exists():
+        stderr = completed.stderr.strip()
+        stdout = completed.stdout.strip()
+        details = stderr or stdout or "未知错误"
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Office 文件转 PDF 失败：{details}")
+
+    return output_pdf
+
+
+def collect_referenced_upload_paths() -> set[Path]:
+    referenced_paths: set[Path] = set()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_paths FROM messages WHERE file_paths IS NOT NULL")
+        rows = cursor.fetchall()
+
+    for row in rows:
+        try:
+            file_paths = json.loads(row["file_paths"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        if not isinstance(file_paths, list):
+            continue
+
+        for file_path in file_paths:
+            resolved_path = resolve_upload_path(file_path)
+            if resolved_path:
+                referenced_paths.add(resolved_path)
+
+    return referenced_paths
+
+
+def cleanup_stale_office_temp_dirs() -> int:
+    temp_root = Path(tempfile.gettempdir())
+    removed_count = 0
+    for temp_dir in temp_root.glob(f"{TEMP_DIR_PREFIX}*"):
+        if not temp_dir.is_dir():
+            continue
+        if not is_path_expired(temp_dir, TEMP_DIR_TTL_SECONDS):
+            continue
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        removed_count += 1
+        print(f"🧹 已清理过期临时目录: {temp_dir}")
+    return removed_count
+
+
+def cleanup_orphaned_upload_files() -> int:
+    referenced_paths = collect_referenced_upload_paths()
+    removed_count = 0
+    for upload_file in UPLOADS_DIR.iterdir():
+        if not upload_file.is_file():
+            continue
+        if upload_file in referenced_paths:
+            continue
+        if not is_path_expired(upload_file, ORPHAN_UPLOAD_TTL_SECONDS):
+            continue
+        upload_file.unlink(missing_ok=True)
+        removed_count += 1
+        print(f"🧹 已清理孤儿上传文件: {upload_file}")
+    return removed_count
+
+
+def run_temp_file_cleanup() -> dict[str, int]:
+    temp_dir_count = cleanup_stale_office_temp_dirs()
+    orphan_upload_count = cleanup_orphaned_upload_files()
+    return {
+        "removed_temp_dirs": temp_dir_count,
+        "removed_orphan_uploads": orphan_upload_count,
+    }
+
+
+def translate_gemini_error(error: Exception) -> HTTPException:
+    message = str(error)
+    lowered = message.lower()
+
+    network_markers = [
+        "ssl",
+        "eof occurred in violation of protocol",
+        "connectionpool",
+        "read timed out",
+        "temporarily unavailable",
+        "connection reset",
+        "broken pipe",
+    ]
+    if any(marker in lowered for marker in network_markers):
+        return HTTPException(
+            status_code=502,
+            detail="连接 Gemini 服务时网络不稳定，刚刚请求被中断了。请稍后重试；如果持续出现，请检查当前网络、代理或 VPN 设置。"
+        )
+
+    if "api key" in lowered or "permission denied" in lowered or "unauthorized" in lowered:
+        return HTTPException(status_code=500, detail="Gemini API Key 无效或权限不足，请检查后端配置。")
+
+    if "not found" in lowered and "model" in lowered:
+        return HTTPException(status_code=500, detail=f"当前模型 {model_name} 不可用，请检查 GEMINI_MODEL 配置。")
+
+    return HTTPException(status_code=500, detail=f"Gemini 调用失败：{message}")
+
+
+async def upload_file_to_gemini_with_retry(file_path: Path) -> object:
+    last_error: Exception | None = None
+
+    for attempt in range(3):
+        try:
+            return await client.aio.files.upload(path=str(file_path))
+        except Exception as error:
+            last_error = error
+            print(f"❌ Gemini 文件上传失败（第 {attempt + 1} 次）: {error}")
+            if attempt < 2 and is_network_transport_error(error):
+                print(f"🔁 将在 {1.5 * (attempt + 1):.1f} 秒后重试文件上传...")
+                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            raise
+
+    assert last_error is not None
+    raise last_error
+
+
+async def generate_content_with_retry(contents: list[dict[str, object]]) -> str:
+    last_error: Exception | None = None
+
+    for attempt in range(2):
+        try:
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config={'system_instruction': system_prompt}
+            )
+            return response.text
+        except Exception as error:
+            last_error = error
+            print(f"❌ Gemini 生成失败（第 {attempt + 1} 次）: {error}")
+            if attempt == 0:
+                await asyncio.sleep(1)
+
+    assert last_error is not None
+    raise translate_gemini_error(last_error)
+
+
+def validate_upload_metadata(file_name: str | None, content_type: str | None) -> tuple[str, dict[str, object]]:
+    safe_name = sanitize_filename(file_name or "")
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="文件名无效，请重新选择文件。")
+
+    file_type_info = get_file_type_info(safe_name)
+    if not file_type_info:
+        raise HTTPException(status_code=400, detail="暂不支持该文件类型上传。")
+
+    normalized_content_type = (content_type or "").split(";")[0].strip().lower()
+    allowed_mime_types = cast(set[str], file_type_info["mime_types"])
+    if normalized_content_type and normalized_content_type not in allowed_mime_types and normalized_content_type not in GENERIC_ALLOWED_MIME_TYPES:
+        raise HTTPException(status_code=400, detail="文件类型与内容类型不匹配，请重新导出后再试。")
+
+    return safe_name, file_type_info
 
 
 def normalize_tags(tags: list[str] | None) -> list[str]:
@@ -134,6 +494,7 @@ async def chat_with_gemini(request: ChatRequest):
         raise HTTPException(status_code=500, detail="客户端未初始化，请检查.env文件。")
 
     normalized_file_paths = normalize_file_paths(request.file_paths)
+    validate_files_for_model(normalized_file_paths)
 
     # 处理会话ID
     current_session_id = request.session_id
@@ -176,15 +537,43 @@ async def chat_with_gemini(request: ChatRequest):
 
         # 3.构建当前的多模态消息
         current_parts = [{"text": request.prompt}]
+        file_upload_errors: list[str] = []
         for file_path in normalized_file_paths:
             resolved_path = resolve_upload_path(file_path)
             if not resolved_path or not resolved_path.exists():
-                print(f"⚠️ 警告：未找到本地文件 {file_path}")
+                file_upload_errors.append(f"未找到附件 {parse_display_name_from_path(file_path)}，请重新上传后再试。")
+                continue
+
+            display_name = parse_display_name_from_path(file_path)
+            extension = get_file_extension(display_name)
+            upload_source_path = resolved_path
+            temp_cleanup_dir: Path | None = None
+
+            if extension in OFFICE_DOCUMENT_EXTENSIONS:
+                try:
+                    upload_source_path = convert_office_file_to_pdf(resolved_path)
+                    temp_cleanup_dir = upload_source_path.parent
+                    print(f"✅ 已将 Office 文件转换为 PDF: {display_name} -> {upload_source_path.name}")
+                except HTTPException as conversion_error:
+                    file_upload_errors.append(conversion_error.detail)
+                    continue
+
+            if extension in TEXT_FILE_EXTENSIONS:
+                try:
+                    text_content = extract_text_file_content(resolved_path).strip()
+                    if not text_content:
+                        file_upload_errors.append(f"文件 {display_name} 中未提取到可用文本，请检查文件内容后重试。")
+                        continue
+                    current_parts.append({"text": f"以下是文件《{display_name}》的内容，请结合用户问题进行分析：\n\n{text_content}"})
+                    print(f"✅ 已将文本文件内容附加到 Prompt: {display_name}")
+                except Exception as extraction_error:
+                    print(f"❌ 读取文本文件 {resolved_path} 失败: {extraction_error}")
+                    file_upload_errors.append(f"文件 {display_name} 读取失败，请确认文件编码或内容后重试。")
                 continue
 
             try:
-                print(f"正在上传文件到 Gemini: {resolved_path}")
-                uploaded_file = await client.aio.files.upload(path=str(resolved_path))
+                print(f"正在上传文件到 Gemini: {upload_source_path}")
+                uploaded_file = await upload_file_to_gemini_with_retry(upload_source_path)
                 current_parts.append({
                     "file_data": {
                         "mime_type": uploaded_file.mime_type,
@@ -193,7 +582,14 @@ async def chat_with_gemini(request: ChatRequest):
                 })
                 print(f"文件已关联至 Prompt: {uploaded_file.uri}")
             except Exception as upload_error:
-                print(f"❌ 上传文件 {resolved_path} 到 Gemini 失败: {upload_error}")
+                print(f"❌ 上传文件 {upload_source_path} 到 Gemini 失败: {upload_error}")
+                raise build_model_file_upload_error(display_name, upload_error)
+            finally:
+                if temp_cleanup_dir:
+                    shutil.rmtree(temp_cleanup_dir, ignore_errors=True)
+
+        if file_upload_errors:
+            raise HTTPException(status_code=400, detail=file_upload_errors[0])
 
         gemini_contents.append({
             "role": "user",
@@ -203,13 +599,7 @@ async def chat_with_gemini(request: ChatRequest):
         # 4.调用模型
         print(f"正在调用 Gemini 模型 ({len(gemini_contents)} 轮对话上下文)...")
         try:
-            # 增加系统指令参数，确保公式输出规范
-            response = await client.aio.models.generate_content(
-                model='gemini-3-flash-preview',
-                contents=gemini_contents,
-                config={'system_instruction': system_prompt}
-            )
-            ai_response_text = response.text
+            ai_response_text = await generate_content_with_retry(gemini_contents)
             print("✅ Gemini 响应生成成功。")
         except Exception as gen_error:
             import traceback
@@ -230,6 +620,8 @@ async def chat_with_gemini(request: ChatRequest):
             "session_id": current_session_id,
             "response": ai_response_text
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -237,22 +629,38 @@ async def chat_with_gemini(request: ChatRequest):
 async def upload_file(file: UploadFile = File(...)):
     """上传文件（图片/音频/文档）至本地"""
     try:
-        # 生成唯一文件名
-        ext = os.path.splitext(file.filename or "")[1]
-        unique_filename = f"{uuid.uuid4()}{ext}"
+        safe_name, file_type_info = validate_upload_metadata(file.filename, file.content_type)
+        unique_filename = f"{uuid.uuid4().hex}__{safe_name}"
         file_path = UPLOADS_DIR / unique_filename
-        
+
+        file_size = 0
         with open(file_path, "wb") as buffer:
             writable_buffer = cast(BinaryIO, buffer)
-            shutil.copyfileobj(file.file, writable_buffer)
+            while chunk := file.file.read(1024 * 1024):
+                file_size += len(chunk)
+                if file_size > MAX_UPLOAD_SIZE:
+                    raise HTTPException(status_code=400, detail="文件过大，请上传 20MB 以内的文件。")
+                writable_buffer.write(chunk)
+
+        if file_size == 0:
+            raise HTTPException(status_code=400, detail="上传失败：文件内容为空。")
 
         relative_path = str(file_path.relative_to(BASE_DIR))
         return {
             "message": "文件上传成功",
             "file_path": relative_path,
-            "original_filename": file.filename
+            "original_filename": safe_name,
+            "mime_type": (file.content_type or "application/octet-stream").split(";")[0].strip().lower() or "application/octet-stream",
+            "file_kind": cast(str, file_type_info["kind"]),
+            "file_size": file_size,
         }
+    except HTTPException:
+        if 'file_path' in locals() and file_path.exists():
+            file_path.unlink(missing_ok=True)
+        raise
     except Exception as e:
+        if 'file_path' in locals() and file_path.exists():
+            file_path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"文件上传失败: {e}")
 
 @app.get("/sessions")
@@ -310,6 +718,18 @@ async def get_session_messages(session_id: str):
         return messages
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/maintenance/cleanup-temp-files")
+async def cleanup_temp_files():
+    try:
+        cleanup_result = run_temp_file_cleanup()
+        return {
+            "message": "临时文件清理完成",
+            **cleanup_result,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"临时文件清理失败: {e}")
 
 @app.get("/cards")
 async def get_knowledge_cards():

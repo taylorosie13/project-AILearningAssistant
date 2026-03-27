@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import UniformTypeIdentifiers
 
 // MARK: - 主题配色
 struct AppTheme {
@@ -15,8 +16,10 @@ struct ChatView: View {
     @StateObject private var viewModel = ChatViewModel()
     @State private var selectedItems: [PhotosPickerItem] = []
     @State private var showCamera = false
+    @State private var showFileImporter = false
     @State private var cameraImage: UIImage? = nil
     @State private var showSidebar = false
+    @State private var bannerTask: Task<Void, Never>?
     
     var body: some View {
         NavigationStack {
@@ -44,7 +47,7 @@ struct ChatView: View {
                                     
                                     if viewModel.isLoading {
                                         HStack {
-                                            LoadingIndicator()
+                                            LoadingIndicator(statusText: viewModel.processingStage.statusText)
                                                 .padding(.leading, 20)
                                             Spacer()
                                         }
@@ -60,9 +63,30 @@ struct ChatView: View {
                         InputArea(
                             viewModel: viewModel,
                             selectedItems: $selectedItems,
-                            showCamera: $showCamera
+                            showCamera: $showCamera,
+                            showFileImporter: $showFileImporter
                         )
                         .opacity(showSidebar ? 0.3 : 1.0)
+                    }
+
+                    if let alert = viewModel.activeAlert {
+                        VStack {
+                            BannerView(
+                                title: alert.title,
+                                message: alert.message,
+                                onClose: {
+                                    bannerTask?.cancel()
+                                    withAnimation {
+                                        viewModel.dismissAlert()
+                                    }
+                                }
+                            )
+                            .padding(.horizontal, 16)
+                            .padding(.top, 8)
+                            Spacer()
+                        }
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .zIndex(2)
                     }
                     
                     if showSidebar {
@@ -106,29 +130,38 @@ struct ChatView: View {
                 .sheet(isPresented: $showCamera) {
                     ImagePicker(image: $cameraImage, sourceType: .camera)
                 }
+                .fileImporter(
+                    isPresented: $showFileImporter,
+                    allowedContentTypes: UTType.supportedChatAttachments,
+                    allowsMultipleSelection: true
+                ) { result in
+                    switch result {
+                    case .success(let urls):
+                        for url in urls {
+                            viewModel.addPickedFile(from: url)
+                        }
+                    case .failure(let error):
+                        viewModel.activeAlert = .init(title: "选择文件失败", message: error.localizedDescription)
+                    }
+                }
                 .sheet(isPresented: $viewModel.showingCardEditor) {
                     CardEditSheet(viewModel: viewModel)
                 }
-                .alert(
-                    "操作失败",
-                    isPresented: Binding(
-                        get: { viewModel.errorMessage != nil },
-                        set: { isPresented in
-                            if !isPresented {
-                                viewModel.errorMessage = nil
-                            }
+                .onChange(of: viewModel.activeAlert?.id) { _, newValue in
+                    bannerTask?.cancel()
+                    guard newValue != nil else { return }
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {}
+                    bannerTask = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        guard !Task.isCancelled else { return }
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                            viewModel.dismissAlert()
                         }
-                    )
-                ) {
-                    Button("知道了", role: .cancel) {
-                        viewModel.errorMessage = nil
                     }
-                } message: {
-                    Text(viewModel.errorMessage ?? "请稍后再试。")
                 }
                 .onChange(of: cameraImage) { oldImage, newImage in
                     if let image = newImage {
-                        viewModel.selectedImages.append(image)
+                        viewModel.addPickedImage(image)
                         cameraImage = nil
                     }
                 }
@@ -141,6 +174,43 @@ struct ChatView: View {
         if let last = viewModel.messages.last {
             proxy.scrollTo(last.id, anchor: .bottom)
         }
+    }
+}
+
+struct BannerView: View {
+    let title: String
+    let message: String
+    let onClose: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 18))
+                .foregroundColor(Color(red: 0.78, green: 0.43, blue: 0.08))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(AppTheme.accent)
+                Text(message)
+                    .font(.system(size: 13))
+                    .foregroundColor(.primary.opacity(0.85))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.secondary)
+                    .padding(6)
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.98))
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .shadow(color: Color.black.opacity(0.08), radius: 12, x: 0, y: 4)
     }
 }
 
@@ -352,7 +422,7 @@ struct MessageBubble: View {
                     Spacer()
                     VStack(alignment: .trailing, spacing: 8) {
                         if let filePaths = message.filePaths, !filePaths.isEmpty {
-                            ImageGrid(filePaths: filePaths)
+                            MessageAttachmentList(filePaths: filePaths)
                         }
                         if !message.content.isEmpty {
                             Text(message.content)
@@ -390,7 +460,7 @@ struct MessageBubble: View {
                     .padding(.bottom, 4)
                     
                     if let filePaths = message.filePaths, !filePaths.isEmpty {
-                        ImageGrid(filePaths: filePaths)
+                        MessageAttachmentList(filePaths: filePaths)
                     }
                     
                     if !message.content.isEmpty {
@@ -429,22 +499,37 @@ struct MessageBubble: View {
     }
 }
 
-struct ImageGrid: View {
+struct MessageAttachmentList: View {
     let filePaths: [String]
+
+    private var attachments: [MessageAttachment] {
+        filePaths.map(MessageAttachment.from(filePath:))
+    }
+
     var body: some View {
-        ForEach(filePaths, id: \.self) { path in
-            let imageUrl = "\(NetworkManager.shared.baseURL)/\(path)"
-            AsyncImage(url: URL(string: imageUrl)) { phase in
-                if let image = phase.image {
-                    image.resizable()
-                        .scaledToFit()
-                        .cornerRadius(12)
-                        .shadow(color: AppTheme.shadow, radius: 5, x: 0, y: 2)
+        VStack(spacing: 10) {
+            ForEach(attachments) { attachment in
+                if attachment.fileKind == .image {
+                    let imageUrl = "\(NetworkManager.shared.baseURL)/\(attachment.filePath)"
+                    AsyncImage(url: URL(string: imageUrl)) { phase in
+                        if let image = phase.image {
+                            image.resizable()
+                                .scaledToFit()
+                                .cornerRadius(12)
+                                .shadow(color: AppTheme.shadow, radius: 5, x: 0, y: 2)
+                        } else {
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color.gray.opacity(0.1))
+                                .frame(height: 150)
+                                .overlay(ProgressView())
+                        }
+                    }
                 } else {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color.gray.opacity(0.1))
-                        .frame(height: 150)
-                        .overlay(ProgressView())
+                    AttachmentCard(
+                        title: attachment.displayName,
+                        subtitle: "\(attachment.fileKind.displayName) · \(attachment.fileExtension)",
+                        systemImageName: attachment.fileKind.systemImageName
+                    )
                 }
             }
         }
@@ -456,22 +541,32 @@ struct InputArea: View {
     @ObservedObject var viewModel: ChatViewModel
     @Binding var selectedItems: [PhotosPickerItem]
     @Binding var showCamera: Bool
+    @Binding var showFileImporter: Bool
     
     var body: some View {
         VStack(spacing: 0) {
             Divider().opacity(0.5)
-            if !viewModel.selectedImages.isEmpty {
+            if let statusText = viewModel.processingStage.statusText, viewModel.isLoading {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                    Text(statusText)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(AppTheme.accent)
+                        .lineLimit(2)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, viewModel.selectedAttachments.isEmpty ? 4 : 0)
+            }
+            if !viewModel.selectedAttachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
-                        ForEach(0..<viewModel.selectedImages.count, id: \.self) { index in
+                        ForEach(Array(viewModel.selectedAttachments.enumerated()), id: \.element.id) { index, attachment in
                             ZStack(alignment: .topTrailing) {
-                                Image(uiImage: viewModel.selectedImages[index])
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: 60, height: 60)
-                                    .cornerRadius(10)
-                                    .clipped()
-                                Button(action: { viewModel.removeImage(at: index) }) {
+                                SelectedAttachmentCard(attachment: attachment)
+                                Button(action: { viewModel.removeAttachment(at: index) }) {
                                     Image(systemName: "xmark.circle.fill")
                                         .symbolRenderingMode(.palette)
                                         .foregroundStyle(.white, AppTheme.accent)
@@ -484,10 +579,28 @@ struct InputArea: View {
                     .padding(.top, 15)
                     .padding(.bottom, 5)
                 }
+                if viewModel.selectedAttachments.contains(where: { $0.transferState == .failed }) && !viewModel.isLoading {
+                    HStack {
+                        Button(action: { withAnimation { viewModel.retryAttachments() } }) {
+                            Label("重试附件发送", systemImage: "arrow.clockwise")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(AppTheme.accent)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+                }
             }
             HStack(alignment: .bottom, spacing: 12) {
                 Button(action: { showCamera = true }) {
                     Image(systemName: "camera.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(AppTheme.accent)
+                        .padding(.bottom, 10)
+                }
+                Button(action: { showFileImporter = true }) {
+                    Image(systemName: "paperclip")
                         .font(.system(size: 20))
                         .foregroundColor(AppTheme.accent)
                         .padding(.bottom, 10)
@@ -503,7 +616,7 @@ struct InputArea: View {
                         for item in newValue {
                             if let data = try? await item.loadTransferable(type: Data.self),
                                let image = UIImage(data: data) {
-                                viewModel.selectedImages.append(image)
+                                viewModel.addPickedImage(image)
                             }
                         }
                         selectedItems = []
@@ -520,14 +633,135 @@ struct InputArea: View {
                     Image(systemName: "arrow.up.circle.fill")
                         .resizable()
                         .frame(width: 32, height: 32)
-                        .foregroundColor((viewModel.inputText.isEmpty && viewModel.selectedImages.isEmpty) ? Color.gray.opacity(0.3) : AppTheme.accent)
+                        .foregroundColor((viewModel.inputText.isEmpty && viewModel.selectedAttachments.isEmpty) ? Color.gray.opacity(0.3) : AppTheme.accent)
                         .padding(.bottom, 4)
                 }
-                .disabled((viewModel.inputText.isEmpty && viewModel.selectedImages.isEmpty) || viewModel.isLoading)
+                .disabled((viewModel.inputText.isEmpty && viewModel.selectedAttachments.isEmpty) || viewModel.isLoading)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
             .background(Color.white)
+        }
+    }
+}
+
+struct SelectedAttachmentCard: View {
+    let attachment: LocalAttachment
+
+    var body: some View {
+        Group {
+            if attachment.fileKind == .image, let previewImage = attachment.previewImage {
+                ZStack(alignment: .bottomLeading) {
+                    Image(uiImage: previewImage)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 60, height: 60)
+                        .cornerRadius(10)
+                        .clipped()
+                    AttachmentStatusBadge(state: attachment.transferState)
+                        .padding(4)
+                }
+            } else {
+                AttachmentCard(
+                    title: attachment.displayName,
+                    subtitle: attachment.fileKind.displayName,
+                    systemImageName: attachment.fileKind.systemImageName,
+                    compact: true,
+                    transferState: attachment.transferState
+                )
+                .frame(width: 170)
+            }
+        }
+    }
+}
+
+struct AttachmentCard: View {
+    let title: String
+    let subtitle: String
+    let systemImageName: String
+    var compact: Bool = false
+    var transferState: AttachmentTransferState? = nil
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImageName)
+                .font(.system(size: compact ? 18 : 20, weight: .semibold))
+                .foregroundColor(AppTheme.accent)
+                .frame(width: compact ? 30 : 38, height: compact ? 30 : 38)
+                .background(AppTheme.userBubble.opacity(0.7))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: compact ? 12 : 14, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(2)
+
+                Text(subtitle)
+                    .font(.system(size: compact ? 11 : 12))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                if let transferState {
+                    HStack(spacing: 4) {
+                        Image(systemName: transferState.systemImageName)
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(transferState.displayText)
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundColor(statusColor(for: transferState))
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, compact ? 10 : 12)
+        .padding(.vertical, compact ? 10 : 12)
+        .background(Color.white.opacity(0.9))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .shadow(color: AppTheme.shadow, radius: 4, x: 0, y: 2)
+    }
+
+    private func statusColor(for state: AttachmentTransferState) -> Color {
+        switch state {
+        case .idle:
+            return .secondary
+        case .uploading:
+            return AppTheme.accent
+        case .uploaded:
+            return .green
+        case .failed:
+            return .red
+        }
+    }
+}
+
+struct AttachmentStatusBadge: View {
+    let state: AttachmentTransferState
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: state.systemImageName)
+                .font(.system(size: 9, weight: .bold))
+            Text(state.displayText)
+                .font(.system(size: 9, weight: .bold))
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(badgeBackground)
+        .foregroundColor(.white)
+        .clipShape(Capsule())
+    }
+
+    private var badgeBackground: Color {
+        switch state {
+        case .idle:
+            return .gray.opacity(0.8)
+        case .uploading:
+            return AppTheme.accent
+        case .uploaded:
+            return .green
+        case .failed:
+            return .red
         }
     }
 }
@@ -559,11 +793,20 @@ struct BubbleShape: Shape {
 }
 
 struct LoadingIndicator: View {
+    let statusText: String?
     @State private var isAnimating = false
     var body: some View {
-        HStack(spacing: 4) {
-            ForEach(0..<3) { i in
-                Circle().fill(AppTheme.accent.opacity(0.5)).frame(width: 6, height: 6).scaleEffect(isAnimating ? 1.0 : 0.5).animation(Animation.easeInOut(duration: 0.5).repeatForever().delay(Double(i) * 0.2), value: isAnimating)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 4) {
+                ForEach(0..<3) { i in
+                    Circle().fill(AppTheme.accent.opacity(0.5)).frame(width: 6, height: 6).scaleEffect(isAnimating ? 1.0 : 0.5).animation(Animation.easeInOut(duration: 0.5).repeatForever().delay(Double(i) * 0.2), value: isAnimating)
+                }
+            }
+            if let statusText, !statusText.isEmpty {
+                Text(statusText)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(AppTheme.accent)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .onAppear { isAnimating = true }

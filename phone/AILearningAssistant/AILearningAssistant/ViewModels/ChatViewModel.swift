@@ -2,16 +2,44 @@ import Foundation
 import SwiftUI
 import Combine
 import PhotosUI
+import UniformTypeIdentifiers
 
 @MainActor
 class ChatViewModel: ObservableObject {
+    struct AlertState: Identifiable {
+        let id = UUID()
+        let title: String
+        let message: String
+    }
+
+    enum ProcessingStage {
+        case idle
+        case uploadingFile(String)
+        case preparingDocuments(Int)
+        case requestingModel
+
+        var statusText: String? {
+            switch self {
+            case .idle:
+                return nil
+            case .uploadingFile(let fileName):
+                return "正在上传 \(fileName)..."
+            case .preparingDocuments(let count):
+                return count == 1 ? "正在转换文档并准备交给 AI..." : "正在转换 \(count) 个文档并准备交给 AI..."
+            case .requestingModel:
+                return "AI 正在解析，请稍候..."
+            }
+        }
+    }
+
     @Published var messages: [ChatMessage] = []
     @Published var inputText: String = ""
     @Published private(set) var isLoading: Bool = false
-    @Published var errorMessage: String?
+    @Published var activeAlert: AlertState?
+    @Published private(set) var processingStage: ProcessingStage = .idle
     
-    // 多模态支持：选中的图片
-    @Published var selectedImages: [UIImage] = []
+    // 多模态支持：选中的附件
+    @Published var selectedAttachments: [LocalAttachment] = []
     
     // 历史会话支持
     @Published var sessions: [ChatSession] = []
@@ -59,8 +87,32 @@ class ChatViewModel: ObservableObject {
 
     private func presentError(_ error: Error, fallback: String) {
         let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        errorMessage = message.isEmpty ? fallback : message
+        let resolvedMessage = message.isEmpty ? fallback : message
+        activeAlert = AlertState(title: alertTitle(for: fallback), message: resolvedMessage)
         print("\(fallback): \(error)")
+    }
+
+    func dismissAlert() {
+        activeAlert = nil
+    }
+
+    private func alertTitle(for fallback: String) -> String {
+        if fallback.contains("发送") {
+            return "发送失败"
+        }
+        if fallback.contains("上传") {
+            return "上传失败"
+        }
+        if fallback.contains("加载") {
+            return "加载失败"
+        }
+        if fallback.contains("删除") {
+            return "删除失败"
+        }
+        if fallback.contains("保存") {
+            return "保存失败"
+        }
+        return "操作失败"
     }
     
     func loadKnowledgeCards() async {
@@ -182,7 +234,7 @@ class ChatViewModel: ObservableObject {
     }
     
     func startNewChat() {
-        errorMessage = nil
+        activeAlert = nil
         activeSessionLoadID = UUID()
         activeSendID = UUID()
         sessionLoadTask?.cancel()
@@ -191,13 +243,13 @@ class ChatViewModel: ObservableObject {
         self.currentSessionId = nil
         self.selectedSessionId = nil
         self.inputText = ""
-        self.selectedImages = []
+        self.selectedAttachments = []
         self.isLoadingSession = false
         self.isSendingMessage = false
     }
     
     func selectSession(_ session: ChatSession) {
-        errorMessage = nil
+        activeAlert = nil
         let loadID = UUID()
         activeSessionLoadID = loadID
         activeSendID = UUID()
@@ -233,17 +285,35 @@ class ChatViewModel: ObservableObject {
 
     private func syncLoadingState() {
         isLoading = isSendingMessage || isLoadingSession
+        if !isLoading {
+            processingStage = .idle
+        }
+    }
+
+    private func updateAttachmentState(id: UUID, state: AttachmentTransferState, uploadedPath: String? = nil) {
+        guard let index = selectedAttachments.firstIndex(where: { $0.id == id }) else { return }
+        selectedAttachments[index].transferState = state
+        if let uploadedPath {
+            selectedAttachments[index].uploadedPath = uploadedPath
+        }
+    }
+
+    private func resetAttachmentStatesToIdle() {
+        for index in selectedAttachments.indices {
+            selectedAttachments[index].transferState = .idle
+            selectedAttachments[index].uploadedPath = nil
+        }
     }
 
     func sendMessage() {
         guard !isSendingMessage else { return }
-        errorMessage = nil
+        activeAlert = nil
 
         let trimmedInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedInput.isEmpty || !selectedImages.isEmpty else { return }
+        guard !trimmedInput.isEmpty || !selectedAttachments.isEmpty else { return }
 
         let textToSend = trimmedInput
-        let imagesToSend = selectedImages
+        let attachmentsToSend = selectedAttachments
         let localMessageID = UUID()
         let sendID = UUID()
         activeSendID = sendID
@@ -252,23 +322,23 @@ class ChatViewModel: ObservableObject {
         messages.append(userMsg)
         
         inputText = ""
-        selectedImages = []
         isSendingMessage = true
         
         sendTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.isSendingMessage = false }
+            defer {
+                self.isSendingMessage = false
+                self.processingStage = .idle
+            }
 
             do {
                 var uploadedFilePaths: [String] = []
-                for (index, image) in imagesToSend.enumerated() {
-                    if let data = image.jpegData(compressionQuality: 0.7) {
-                        let uploadResp = try await NetworkManager.shared.uploadFile(
-                            imageData: data,
-                            fileName: "image_\(index).jpg"
-                        )
-                        uploadedFilePaths.append(uploadResp.file_path)
-                    }
+                for attachment in attachmentsToSend {
+                    self.processingStage = .uploadingFile(attachment.displayName)
+                    self.updateAttachmentState(id: attachment.id, state: .uploading)
+                    let uploadResp = try await uploadAttachment(attachment)
+                    uploadedFilePaths.append(uploadResp.file_path)
+                    self.updateAttachmentState(id: attachment.id, state: .uploaded, uploadedPath: uploadResp.file_path)
                 }
 
                 guard !Task.isCancelled, sendID == self.activeSendID else { return }
@@ -278,6 +348,11 @@ class ChatViewModel: ObservableObject {
                     self.messages[messageIndex].filePaths = uploadedFilePaths
                 }
 
+                let officeDocumentCount = attachmentsToSend.filter(\.requiresServerDocumentPreparation).count
+                self.processingStage = officeDocumentCount > 0
+                    ? .preparingDocuments(officeDocumentCount)
+                    : .requestingModel
+
                 let response = try await NetworkManager.shared.sendMessage(
                     prompt: textToSend,
                     sessionId: self.currentSessionId,
@@ -286,14 +361,23 @@ class ChatViewModel: ObservableObject {
 
                 guard !Task.isCancelled, sendID == self.activeSendID else { return }
                 
+                self.processingStage = .requestingModel
                 self.currentSessionId = response.session_id
                 let aiMsg = ChatMessage(role: "model", content: response.response, filePaths: nil)
                 self.messages.append(aiMsg)
+                self.selectedAttachments = []
                 
             } catch is CancellationError {
                 return
             } catch {
                 guard !Task.isCancelled, sendID == self.activeSendID else { return }
+                if self.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.inputText = textToSend
+                }
+                self.messages.removeAll(where: { $0.id == localMessageID })
+                for attachment in attachmentsToSend {
+                    self.updateAttachmentState(id: attachment.id, state: .failed)
+                }
                 self.presentError(error, fallback: "发送消息失败")
             }
         }
@@ -314,7 +398,7 @@ class ChatViewModel: ObservableObject {
                     self.currentSessionId = nil
                     self.selectedSessionId = nil
                     self.inputText = ""
-                    self.selectedImages = []
+                    self.selectedAttachments = []
                     self.isLoadingSession = false
                     self.isSendingMessage = false
                 }
@@ -332,7 +416,74 @@ class ChatViewModel: ObservableObject {
         }
     }
     
-    func removeImage(at index: Int) {
-        selectedImages.remove(at: index)
+    func addPickedImage(_ image: UIImage) {
+        guard let imageData = image.jpegData(compressionQuality: 0.8) else { return }
+
+        selectedAttachments.append(
+            LocalAttachment(
+                displayName: "image_\(selectedAttachments.count + 1).jpg",
+                fileKind: .image,
+                mimeType: "image/jpeg",
+                data: imageData,
+                previewImage: image
+            )
+        )
+    }
+
+    func addPickedFile(from url: URL) {
+        let type = (try? url.resourceValues(forKeys: [.contentTypeKey]).contentType)
+            ?? UTType(filenameExtension: url.pathExtension)
+            ?? .data
+
+        guard type != .data else {
+            activeAlert = AlertState(title: "添加文件失败", message: "无法识别这个文件的类型，请换一个文件后再试。")
+            return
+        }
+
+        selectedAttachments.append(
+            LocalAttachment(
+                displayName: url.lastPathComponent,
+                fileKind: AttachmentTypeResolver.kind(for: type),
+                mimeType: AttachmentTypeResolver.mimeType(for: type, fileExtension: url.pathExtension),
+                localURL: url
+            )
+        )
+    }
+
+    func removeAttachment(at index: Int) {
+        selectedAttachments.remove(at: index)
+    }
+
+    func retryAttachments() {
+        resetAttachmentStatesToIdle()
+        sendMessage()
+    }
+
+    private func uploadAttachment(_ attachment: LocalAttachment) async throws -> UploadResponse {
+        if let data = attachment.data {
+            return try await NetworkManager.shared.uploadFile(
+                data: data,
+                fileName: attachment.displayName,
+                mimeType: attachment.mimeType
+            )
+        }
+
+        guard let localURL = attachment.localURL else {
+            throw NetworkError.serverError(statusCode: -1, message: "找不到待上传的本地文件。")
+        }
+
+        let hasAccess = localURL.startAccessingSecurityScopedResource()
+        defer {
+            if hasAccess {
+                localURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let fileData = try Data(contentsOf: localURL)
+        return try await NetworkManager.shared.uploadFile(
+            data: fileData,
+            fileName: attachment.displayName,
+            mimeType: attachment.mimeType
+        )
     }
 }
