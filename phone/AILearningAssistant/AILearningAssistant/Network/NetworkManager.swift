@@ -66,7 +66,7 @@ private extension NetworkError {
         }
 
         if lowered.contains("文件过大") {
-            return "文件太大了，请上传 20MB 以内的文件。"
+            return "文件太大了，请上传20MB以内的文件。"
         }
 
         if lowered.contains("暂不支持该文件类型上传") {
@@ -74,7 +74,7 @@ private extension NetworkError {
         }
 
         if statusCode >= 500 {
-            return "后端处理这次请求时出了点问题，请稍后再试。"
+            return "服务器处理这次请求时出了点问题，请稍后再试。"
         }
 
         return trimmed
@@ -87,9 +87,9 @@ private extension NetworkError {
         case .timedOut:
             return "请求超时了，请稍后再试。"
         case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost:
-            return "暂时连不上本地后端服务，请确认后端已经启动。"
+            return "暂时连不上服务器，稍后再试试吧。"
         default:
-            return "网络连接异常，请检查当前网络和本地后端服务。"
+            return "网络连接异常，请检查网络。"
         }
     }
 }

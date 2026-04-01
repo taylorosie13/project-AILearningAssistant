@@ -1,7 +1,7 @@
 # 项目开发进度与优化备忘录 (Development Log)
 
-**最后更新：** 2026-03-27  
-**当前版本：** v1.7 (Unified File Upload and Office Document Pipeline)
+**最后更新：** 2026-04-01  
+**当前版本：** v1.8 (Voice Workspace and Audio Recording Flow)
 
 ---
 
@@ -28,6 +28,9 @@
 - **网络层重构**：`NetworkManager` 已统一 URL 构造、请求发送和错误解码，并能透传 FastAPI 的 `detail`。
 - **错误提示**：聊天页已从阻塞式 `alert` 升级为非阻塞 banner，并针对上传、转换、后端连接、Gemini 网络中断等场景提供更清晰文案。
 - **附件状态提示**：发送时可看到“上传中 / 转换文档中 / AI 解析中”等整体状态，同时每个附件也会显示待发送、上传中、已就绪、失败状态，并支持失败后一键重试。
+- **语音转写工作台**：已支持录音、实时转写、保存本地语音内容、将语音附件带回聊天输入区，并支持已保存内容列表管理。
+- **语音文本可编辑**：待处理转写结果支持直接修改；已保存的语音转写内容也支持二次编辑后写回本地存储。
+- **录音交互收口**：语音页已修复双返回按钮、保存后旧转写残留、录音页误触自动发送等体验问题，并为录音按钮增加状态切换保护。
 - **知识卡片管理**：
   - 支持从聊天消息收藏为卡片
   - 支持编辑已有卡片
@@ -56,6 +59,13 @@
 - 将图片专用上传升级为统一附件上传，输入区新增文件选择器。
 - `ChatViewModel` 增加附件发送状态管理、失败保留与手动重试能力。
 - 聊天页错误提示升级为非阻塞 banner，并新增整体进度与附件级状态展示。
+- 新增语音工作台入口，支持：
+  - 录音并实时转写
+  - 保存音频与转写文本到本地
+  - 将语音附件和转写文本加入聊天输入区，但不自动发送
+  - 在已保存内容列表中播放音频和编辑转写文本
+- 新增 `AudioRecorderController`、`AudioPreviewPlayer`、`VoiceCaptureStore` 等语音模块基础组件。
+- 录音流程增加防重复触发、无可用麦克风输入的显式错误提示，并通过本地构建验证修复了编译阻塞问题。
 - 卡片编辑弹窗支持两种模式：
   - 新建卡片
   - 编辑已有卡片
@@ -80,13 +90,21 @@
   已成为统一请求入口，后续新增接口建议继续复用当前模式。
 - [KnowledgeCardView.swift](/Users/taylorosie13/project-AILearningAssistant/phone/AILearningAssistant/AILearningAssistant/Views/KnowledgeCardView.swift)
   已支持搜索、分组、折叠、编辑入口，是当前卡片功能的核心页面。
+- [VoiceWorkspaceView.swift](/Users/taylorosie13/project-AILearningAssistant/phone/AILearningAssistant/AILearningAssistant/Views/VoiceWorkspaceView.swift)
+  负责语音工作台、待处理转写、已保存语音内容列表与编辑交互。
+- [AudioRecorderController.swift](/Users/taylorosie13/project-AILearningAssistant/phone/AILearningAssistant/AILearningAssistant/ViewModels/AudioRecorderController.swift)
+  负责麦克风权限、实时转写、录音文件生成和录音状态保护。
+- [VoiceCaptureStore.swift](/Users/taylorosie13/project-AILearningAssistant/phone/AILearningAssistant/AILearningAssistant/ViewModels/VoiceCaptureStore.swift)
+  负责本地语音内容的保存、更新和删除。
 
 ### 当前已知注意点
 - `MarkdownView.swift` 仍依赖 CDN 加载 `MathJax` 和 `marked`，离线环境下可能影响公式/Markdown 渲染。
 - `backend/main.py` 仍然偏大，后续如果继续扩功能，建议尽早拆分。
 - `xcodebuild` 在当前终端环境里受 `xcode-select` 指向 CommandLineTools 影响；你本机 Xcode 手动 build 已成功。
+- 终端中如果直接调用 Xcode 内置 `xcodebuild`，当前工程可以通过 `generic/platform=iOS` 构建校验。
 - Office 文档转 PDF 依赖本机 LibreOffice；若路径变化，需要同步调整后端检测逻辑。
 - 当前旧格式 `doc/ppt/xls` 与现代格式 `docx/pptx/xlsx` 共用转换链路，但仍建议继续验证更多边缘样本文件。
+- 录音文件当前走 `.m4a` 上传链路，建议继续在真机上验证不同输入设备下的稳定性。
 
 ---
 

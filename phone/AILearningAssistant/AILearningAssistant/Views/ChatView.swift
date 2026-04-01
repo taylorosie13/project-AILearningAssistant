@@ -14,9 +14,11 @@ struct AppTheme {
 
 struct ChatView: View {
     @StateObject private var viewModel = ChatViewModel()
+    @StateObject private var voiceCaptureStore = VoiceCaptureStore()
     @State private var selectedItems: [PhotosPickerItem] = []
     @State private var showCamera = false
     @State private var showFileImporter = false
+    @State private var showVoiceWorkspace = false
     @State private var cameraImage: UIImage? = nil
     @State private var showSidebar = false
     @State private var bannerTask: Task<Void, Never>?
@@ -64,7 +66,8 @@ struct ChatView: View {
                             viewModel: viewModel,
                             selectedItems: $selectedItems,
                             showCamera: $showCamera,
-                            showFileImporter: $showFileImporter
+                            showFileImporter: $showFileImporter,
+                            showVoiceWorkspace: $showVoiceWorkspace
                         )
                         .opacity(showSidebar ? 0.3 : 1.0)
                     }
@@ -98,7 +101,12 @@ struct ChatView: View {
                     }
                     
                     // 侧边栏：使用 geometry 获取的动态宽度
-                    SidebarView(showSidebar: $showSidebar, viewModel: viewModel, screenWidth: screenWidth)
+                    SidebarView(
+                        showSidebar: $showSidebar,
+                        viewModel: viewModel,
+                        voiceCaptureStore: voiceCaptureStore,
+                        screenWidth: screenWidth
+                    )
                         .offset(x: showSidebar ? 0 : -screenWidth * 0.8)
                 }
                 .navigationTitle(showSidebar ? "" : (viewModel.currentSessionId == nil ? "新会话" : "正在学习"))
@@ -146,6 +154,15 @@ struct ChatView: View {
                 }
                 .sheet(isPresented: $viewModel.showingCardEditor) {
                     CardEditSheet(viewModel: viewModel)
+                }
+                .sheet(isPresented: $showVoiceWorkspace) {
+                    NavigationStack {
+                        VoiceWorkspaceView(
+                            viewModel: viewModel,
+                            store: voiceCaptureStore,
+                            showsDismissButton: true
+                        )
+                    }
                 }
                 .onChange(of: viewModel.activeAlert?.id) { _, newValue in
                     bannerTask?.cancel()
@@ -270,6 +287,7 @@ struct CardEditSheet: View {
 struct SidebarView: View {
     @Binding var showSidebar: Bool
     @ObservedObject var viewModel: ChatViewModel
+    @ObservedObject var voiceCaptureStore: VoiceCaptureStore
     let screenWidth: CGFloat
     
     var body: some View {
@@ -309,6 +327,33 @@ struct SidebarView: View {
                                 Text("知识卡片盒")
                                     .font(.system(size: 16, weight: .semibold))
                                 Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundColor(.gray)
+                            }
+                            .padding()
+                            .background(Color.white.opacity(0.4))
+                            .cornerRadius(12)
+                        }
+                        .padding(.horizontal, 15)
+                        .padding(.bottom, 10)
+                        .buttonStyle(PlainButtonStyle())
+
+                        NavigationLink(
+                            destination: VoiceWorkspaceView(
+                                viewModel: viewModel,
+                                store: voiceCaptureStore
+                            )
+                        ) {
+                            HStack {
+                                Image(systemName: "waveform.badge.mic")
+                                    .foregroundColor(AppTheme.accent)
+                                Text("语音转写")
+                                    .font(.system(size: 16, weight: .semibold))
+                                Spacer()
+                                Text("\(voiceCaptureStore.captures.count)")
+                                    .font(.caption)
+                                    .foregroundColor(.gray)
                                 Image(systemName: "chevron.right")
                                     .font(.caption)
                                     .foregroundColor(.gray)
@@ -542,15 +587,18 @@ struct InputArea: View {
     @Binding var selectedItems: [PhotosPickerItem]
     @Binding var showCamera: Bool
     @Binding var showFileImporter: Bool
+    @Binding var showVoiceWorkspace: Bool
     
     var body: some View {
+        let topStatusText = viewModel.isLoading ? viewModel.processingStage.statusText : nil
+
         VStack(spacing: 0) {
             Divider().opacity(0.5)
-            if let statusText = viewModel.processingStage.statusText, viewModel.isLoading {
+            if let topStatusText {
                 HStack(spacing: 8) {
                     ProgressView()
                         .scaleEffect(0.8)
-                    Text(statusText)
+                    Text(topStatusText)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(AppTheme.accent)
                         .lineLimit(2)
@@ -599,6 +647,13 @@ struct InputArea: View {
                         .foregroundColor(AppTheme.accent)
                         .padding(.bottom, 10)
                 }
+                Button(action: { showVoiceWorkspace = true }) {
+                    Image(systemName: "waveform.badge.mic")
+                        .font(.system(size: 20))
+                        .foregroundColor(AppTheme.accent)
+                        .padding(.bottom, 10)
+                }
+                .disabled(viewModel.isLoading)
                 Button(action: { showFileImporter = true }) {
                     Image(systemName: "paperclip")
                         .font(.system(size: 20))
@@ -647,6 +702,7 @@ struct InputArea: View {
 
 struct SelectedAttachmentCard: View {
     let attachment: LocalAttachment
+    @StateObject private var audioPreviewPlayer = AudioPreviewPlayer()
 
     var body: some View {
         Group {
@@ -661,6 +717,12 @@ struct SelectedAttachmentCard: View {
                     AttachmentStatusBadge(state: attachment.transferState)
                         .padding(4)
                 }
+            } else if attachment.fileKind == .audio {
+                AudioAttachmentPreviewCard(
+                    attachment: attachment,
+                    player: audioPreviewPlayer
+                )
+                .frame(width: 220)
             } else {
                 AttachmentCard(
                     title: attachment.displayName,
@@ -672,6 +734,105 @@ struct SelectedAttachmentCard: View {
                 .frame(width: 170)
             }
         }
+        .onDisappear {
+            audioPreviewPlayer.stop()
+        }
+    }
+}
+
+struct AudioAttachmentPreviewCard: View {
+    let attachment: LocalAttachment
+    @ObservedObject var player: AudioPreviewPlayer
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Button(action: { player.togglePlayback(for: attachment) }) {
+                    Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundColor(AppTheme.accent)
+                }
+                .buttonStyle(.plain)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(attachment.displayName)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.primary)
+                        .lineLimit(2)
+
+                    Text("音频附件")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            GeometryReader { proxy in
+                let progress = playbackProgress
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.gray.opacity(0.15))
+                        .frame(height: 6)
+                    Capsule()
+                        .fill(AppTheme.accent)
+                        .frame(width: max(10, proxy.size.width * progress), height: 6)
+                }
+            }
+            .frame(height: 6)
+
+            HStack {
+                Text(formattedTime(player.currentTime))
+                Spacer()
+                if let transferState = transferStateText {
+                    Text(transferState)
+                        .foregroundColor(transferStateColor)
+                } else {
+                    Text(formattedTime(player.duration))
+                }
+            }
+            .font(.system(size: 10, weight: .medium))
+            .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .background(Color.white.opacity(0.9))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .shadow(color: AppTheme.shadow, radius: 4, x: 0, y: 2)
+    }
+
+    private var playbackProgress: CGFloat {
+        guard player.duration > 0 else { return 0 }
+        return min(max(player.currentTime / player.duration, 0), 1)
+    }
+
+    private var transferStateText: String? {
+        switch attachment.transferState {
+        case .idle:
+            return nil
+        default:
+            return attachment.transferState.displayText
+        }
+    }
+
+    private var transferStateColor: Color {
+        switch attachment.transferState {
+        case .uploading:
+            return AppTheme.accent
+        case .uploaded:
+            return .green
+        case .failed:
+            return .red
+        case .idle:
+            return .secondary
+        }
+    }
+
+    private func formattedTime(_ time: TimeInterval) -> String {
+        let totalSeconds = Int(time.rounded(.down))
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 }
 

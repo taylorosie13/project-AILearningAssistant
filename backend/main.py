@@ -855,5 +855,5 @@ async def delete_session(session_id: str):
 if __name__ == "__main__":
     import uvicorn
 
-    # 在本地启动服务，使用 host="0.0.0.0" 允许局域网内其他设备访问
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # 只监听本机回环地址，避免服务暴露给局域网或更外层网络
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)

@@ -119,7 +119,7 @@ struct MessageAttachment: Identifiable, Hashable {
         URL(fileURLWithPath: filePath).pathExtension.uppercased()
     }
 
-    static func from(filePath: String) -> MessageAttachment {
+    nonisolated static func from(filePath: String) -> MessageAttachment {
         let fileName = URL(fileURLWithPath: filePath).lastPathComponent
         let displayName: String
         if let separatorRange = fileName.range(of: "__") {
@@ -134,10 +134,10 @@ struct MessageAttachment: Identifiable, Hashable {
 }
 
 enum AttachmentTypeResolver {
-    private static let imageExtensions = Set(["jpg", "jpeg", "png", "heic", "gif", "webp"])
-    private static let documentExtensions = Set(["pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "txt", "md"])
+    nonisolated private static let imageExtensions = Set(["jpg", "jpeg", "png", "heic", "gif", "webp"])
+    nonisolated private static let documentExtensions = Set(["pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "txt", "md"])
 
-    static func kind(forPath path: String) -> AttachmentKind {
+    nonisolated static func kind(forPath path: String) -> AttachmentKind {
         let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
         if imageExtensions.contains(ext) {
             return .image
@@ -148,7 +148,7 @@ enum AttachmentTypeResolver {
         return .audio
     }
 
-    static func kind(for type: UTType) -> AttachmentKind {
+    nonisolated static func kind(for type: UTType) -> AttachmentKind {
         if type.conforms(to: .image) {
             return .image
         }
@@ -158,7 +158,7 @@ enum AttachmentTypeResolver {
         return .document
     }
 
-    static func mimeType(for type: UTType, fileExtension: String) -> String {
+    nonisolated static func mimeType(for type: UTType, fileExtension: String) -> String {
         if let mimeType = type.preferredMIMEType {
             return mimeType
         }

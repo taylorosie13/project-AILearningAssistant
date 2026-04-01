@@ -450,6 +450,10 @@ class ChatViewModel: ObservableObject {
         )
     }
 
+    func addAttachment(_ attachment: LocalAttachment) {
+        selectedAttachments.append(attachment)
+    }
+
     func removeAttachment(at index: Int) {
         selectedAttachments.remove(at: index)
     }
