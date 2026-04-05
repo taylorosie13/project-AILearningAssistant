@@ -316,6 +316,9 @@ struct AppLaunchView: View {
     @AppStorage("hasCompletedStartupPermissions") private var hasCompletedStartupPermissions = false
     @AppStorage(LaunchPermissionViewModel.localNetworkApprovalKey) private var startupLocalNetworkApproved = false
     @StateObject private var viewModel = LaunchPermissionViewModel()
+    private let heroIconSize: CGFloat = 100
+    private let heroTitleSize: CGFloat = 28
+    private let heroSubtitleSize: CGFloat = 15
     private let primaryTextColor = Color(red: 0.17, green: 0.22, blue: 0.17)
     private let secondaryTextColor = Color(red: 0.38, green: 0.43, blue: 0.38)
     private let accentHighlight = Color(red: 0.33, green: 0.47, blue: 0.31)
@@ -330,20 +333,20 @@ struct AppLaunchView: View {
         } else {
             NavigationStack {
                 VStack(spacing: 24) {
-                    VStack(spacing: 12) {
+                    VStack(spacing: 16) {
                         Image(systemName: "graduationcap.circle.fill")
-                            .font(.system(size: 60))
+                            .font(.system(size: heroIconSize))
                             .foregroundColor(AppTheme.accent)
                         Text("先把权限准备好")
-                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .font(.system(size: heroTitleSize, weight: .bold, design: .rounded))
                             .foregroundColor(AppTheme.accent)
                         Text(viewModel.hintText)
-                            .font(.system(size: 15))
+                            .font(.system(size: heroSubtitleSize))
                             .foregroundColor(secondaryTextColor)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 20)
                     }
-                    .padding(.top, 40)
+                    .padding(.top, 28)
 
                     VStack(spacing: 12) {
                         ForEach(viewModel.items) { item in

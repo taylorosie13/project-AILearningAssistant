@@ -49,32 +49,48 @@ private extension NetworkError {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowered = trimmed.lowercased()
 
+        if lowered.contains("文件名无效") {
+            return "文件名有问题，请换个文件名后再试。"
+        }
+
         if lowered.contains("libreoffice") {
-            return "后端暂时不能处理 Office 文档。请确认电脑上已安装 LibreOffice，并重启后端后再试。"
+            return "暂时不能处理文档,请联系服务器管理员。"
         }
 
         if lowered.contains("office 文件转 pdf 失败") {
             return "文档转换失败。请确认文件没有损坏，或换一个文件后再试。"
         }
 
+        if lowered.contains("内容为空") || lowered.contains("empty") {
+            return "这个文件是空的，换一个有内容的文件再试吧。"
+        }
+
         if lowered.contains("网络连接被中断") || lowered.contains("ssl") || lowered.contains("connectionpool") {
-            return "文件已经在本地处理成功，但连接 Gemini 服务时中断了。请稍后重试，并检查当前网络或代理设置。"
+            return "文件在本地处理成功，但连接云端服务时出现了问题。请检查网络连接后重试。"
         }
 
         if lowered.contains("文件类型与内容类型不匹配") {
             return "这个文件的类型和内容不匹配。请重新导出文件后再上传。"
         }
 
-        if lowered.contains("文件过大") {
+        if lowered.contains("文件过大") || statusCode == 413 {
             return "文件太大了，请上传20MB以内的文件。"
         }
 
         if lowered.contains("暂不支持该文件类型上传") {
-            return "当前还不支持这种文件类型。请换成 PDF、图片、音频或常见文档格式后再试。"
+            return "当前还不支持这种文件类型。请换成PDF、图片、音频或常见文档格式后再试。"
+        }
+
+        if lowered.contains("api key 无效") || lowered.contains("权限不足") {
+            return "接口服务出现异常，请稍后再试。"
+        }
+
+        if lowered.contains("模型") && lowered.contains("不可用") {
+            return "当前正处于高峰时段，暂时无法处理本文件，请稍后再试。"
         }
 
         if statusCode >= 500 {
-            return "服务器处理这次请求时出了点问题，请稍后再试。"
+            return "处理这次请求时出了点问题，请稍后再试。"
         }
 
         return trimmed
@@ -83,11 +99,17 @@ private extension NetworkError {
     static func userFriendlyTransportMessage(for error: URLError) -> String {
         switch error.code {
         case .notConnectedToInternet:
-            return "当前设备没有联网，请检查网络后再试。"
+            return "无网络连接，请检查网络后再试。"
         case .timedOut:
-            return "请求超时了，请稍后再试。"
-        case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost:
-            return "暂时连不上服务器，稍后再试试吧。"
+            return "上传超时。请检查网络连接或稍后再试。"
+        case .networkConnectionLost:
+            return "网络意外断开，请重试。"
+        case .cannotConnectToHost, .cannotFindHost:
+            return "无法连接到服务器，请稍后再试或联系管理员。"
+        case .appTransportSecurityRequiresSecureConnection:
+            return "连接被拦截了，请稍后再试。"
+        case .secureConnectionFailed, .serverCertificateHasBadDate, .serverCertificateUntrusted, .serverCertificateHasUnknownRoot:
+            return "现在没法安全地连接到服务，请稍后再试。"
         default:
             return "网络连接异常，请检查网络。"
         }

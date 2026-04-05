@@ -13,12 +13,15 @@ struct VoiceWorkspaceView: View {
     let showsDismissButton: Bool
     @StateObject private var voiceInputController = VoiceInputController()
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var mode: Mode = .workspace
     @State private var draftTranscript: String = ""
     @State private var draftAttachment: LocalAttachment?
     @State private var editingCapture: SavedVoiceCapture?
     @State private var editingSavedTranscript: String = ""
+    @State private var localAlert: ChatViewModel.AlertState?
+    @State private var bannerTask: Task<Void, Never>?
 
     init(viewModel: ChatViewModel, store: VoiceCaptureStore, showsDismissButton: Bool = false) {
         self.viewModel = viewModel
@@ -46,6 +49,26 @@ struct VoiceWorkspaceView: View {
                     savedContent
                 }
             }
+
+            if let alert = localAlert {
+                VStack {
+                    BannerView(
+                        title: alert.title,
+                        message: alert.message,
+                        onClose: {
+                            bannerTask?.cancel()
+                            withAnimation {
+                                localAlert = nil
+                            }
+                        }
+                    )
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    Spacer()
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .zIndex(2)
+            }
         }
         .navigationTitle("语音转写")
         .navigationBarTitleDisplayMode(.inline)
@@ -61,7 +84,32 @@ struct VoiceWorkspaceView: View {
             store.ensureLoaded()
         }
         .onDisappear {
+            bannerTask?.cancel()
             voiceInputController.cancelRecording()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            switch newPhase {
+            case .inactive, .background:
+                if voiceInputController.isRecording {
+                    voiceInputController.cancelRecording()
+                    localAlert = .init(title: "录音已停止", message: "App 退到后台后，录音会先暂停。回到前台后可以重新开始录音。")
+                }
+            case .active:
+                break
+            @unknown default:
+                voiceInputController.cancelRecording()
+            }
+        }
+        .onChange(of: localAlert?.id) { _, newValue in
+            bannerTask?.cancel()
+            guard newValue != nil else { return }
+            bannerTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                guard !Task.isCancelled else { return }
+                withAnimation {
+                    localAlert = nil
+                }
+            }
         }
         .sheet(item: $editingCapture) { capture in
             NavigationStack {
@@ -288,7 +336,7 @@ struct VoiceWorkspaceView: View {
                     draftAttachment = result.attachment
                 }
             } catch {
-                viewModel.activeAlert = .init(title: "语音转写失败", message: error.localizedDescription)
+                localAlert = .init(title: "语音转写失败", message: error.localizedDescription)
             }
         }
     }
@@ -304,7 +352,7 @@ struct VoiceWorkspaceView: View {
             clearPreparedContent(clearLiveTranscript: true)
             mode = .saved
         } catch {
-            viewModel.activeAlert = .init(title: "保存失败", message: error.localizedDescription)
+            localAlert = .init(title: "保存失败", message: error.localizedDescription)
         }
     }
 
@@ -352,7 +400,7 @@ struct VoiceWorkspaceView: View {
     private func saveEditedCapture(_ capture: SavedVoiceCapture) {
         let trimmedTranscript = editingSavedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTranscript.isEmpty else {
-            viewModel.activeAlert = .init(title: "保存失败", message: "已保存内容不能为空。")
+            localAlert = .init(title: "保存失败", message: "已保存内容不能为空。")
             return
         }
 
@@ -360,7 +408,7 @@ struct VoiceWorkspaceView: View {
             try store.updateCapture(capture, transcript: trimmedTranscript)
             editingCapture = nil
         } catch {
-            viewModel.activeAlert = .init(title: "保存失败", message: error.localizedDescription)
+            localAlert = .init(title: "保存失败", message: error.localizedDescription)
         }
     }
 }
@@ -383,11 +431,15 @@ struct SavedVoiceCaptureRow: View {
                 }
                 Spacer()
                 Button(action: onEdit) {
-                    Label("修改", systemImage: "square.and.pencil")
-                        .font(.system(size: 12, weight: .semibold))
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundColor(AppTheme.accent)
+                        .frame(width: 32, height: 32)
+                        .background(AppTheme.userBubble)
+                        .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("修改已保存内容")
             }
 
             Text(capture.transcript)
@@ -405,7 +457,11 @@ struct SavedVoiceCaptureRow: View {
             )
         }
         .padding(.vertical, 8)
-        .onDisappear { player.stop() }
+        .onDisappear {
+            Task { @MainActor in
+                player.stop()
+            }
+        }
     }
 }
 

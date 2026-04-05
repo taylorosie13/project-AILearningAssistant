@@ -100,6 +100,10 @@ struct LocalAttachment: Identifiable, Equatable {
         lhs.id == rhs.id
     }
 
+    var renderIdentity: String {
+        "\(id.uuidString)-\(transferState.displayText)-\(uploadedPath ?? "")"
+    }
+
     var requiresServerDocumentPreparation: Bool {
         guard fileKind == .document else { return false }
         let officeExtensions = Set(["doc", "docx", "ppt", "pptx", "xls", "xlsx"])

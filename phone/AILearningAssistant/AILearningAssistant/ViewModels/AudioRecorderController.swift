@@ -117,12 +117,13 @@ final class VoiceInputController: NSObject, ObservableObject {
         }
 
         let outputURL = makeRecordingURL()
-        audioFile = try AVAudioFile(forWriting: outputURL, settings: recordingSettings(for: format))
+        let audioFile = try AVAudioFile(forWriting: outputURL, settings: recordingSettings(for: format))
+        self.audioFile = audioFile
         currentRecordingURL = outputURL
         inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            self?.recognitionRequest?.append(buffer)
-            try? self?.audioFile?.write(from: buffer)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            request.append(buffer)
+            try? audioFile.write(from: buffer)
         }
 
         recognitionTask = speechRecognizer.recognitionTask(with: request) { [weak self] result, error in

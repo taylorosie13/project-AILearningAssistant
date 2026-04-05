@@ -136,7 +136,7 @@ struct ChatView: View {
                         }
                     }
                 }
-                .sheet(isPresented: $showCamera) {
+                .fullScreenCover(isPresented: $showCamera) {
                     ImagePicker(image: $cameraImage, sourceType: .camera)
                 }
                 .fileImporter(
@@ -315,7 +315,7 @@ struct SidebarView: View {
                     Text("学习档案")
                         .font(.system(size: 24, weight: .bold, design: .rounded))
                         .foregroundColor(AppTheme.accent)
-                    Text("记录您的知识成长")
+                    Text("记录每一个知识点")
                         .font(.caption)
                         .foregroundColor(.gray)
                 }
@@ -429,7 +429,7 @@ struct SidebarView: View {
                                             viewModel.deleteSession(at: IndexSet(integer: index))
                                         }
                                     } label: {
-                                        Label("物理删除", systemImage: "trash")
+                                        Label("删除", systemImage: "trash")
                                     }
                                 }
                             }
@@ -622,7 +622,7 @@ struct InputArea: View {
             if !viewModel.selectedAttachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
-                        ForEach(Array(viewModel.selectedAttachments.enumerated()), id: \.element.id) { index, attachment in
+                        ForEach(Array(viewModel.selectedAttachments.enumerated()), id: \.element.renderIdentity) { index, attachment in
                             ZStack(alignment: .topTrailing) {
                                 SelectedAttachmentCard(attachment: attachment)
                                 Button(action: { viewModel.removeAttachment(at: index) }) {
@@ -745,8 +745,11 @@ struct SelectedAttachmentCard: View {
                 .frame(width: 170)
             }
         }
+        .id(attachment.renderIdentity)
         .onDisappear {
-            audioPreviewPlayer.stop()
+            Task { @MainActor in
+                audioPreviewPlayer.stop()
+            }
         }
     }
 }
@@ -810,8 +813,10 @@ struct AudioAttachmentPreviewCard: View {
         .background(Color.white.opacity(0.9))
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .shadow(color: AppTheme.shadow, radius: 4, x: 0, y: 2)
-        .task(id: attachment.id) {
-            player.prepareDuration(for: attachment)
+        .onAppear {
+            Task { @MainActor in
+                player.prepareDuration(for: attachment)
+            }
         }
     }
 
@@ -952,7 +957,7 @@ struct EmptyStateView: View {
             }
             VStack(spacing: 8) {
                 Text("您的私人学伴").font(.system(.title3, design: .rounded).bold()).foregroundColor(AppTheme.accent)
-                Text("拍照解题 · 文档总结 · 知识问答").font(.subheadline).foregroundColor(.gray)
+                Text("蒽蒽快来学习吧诡秘").font(.subheadline).foregroundColor(.gray)
             }
             Spacer()
         }

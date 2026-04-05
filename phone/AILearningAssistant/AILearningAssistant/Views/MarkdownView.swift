@@ -15,6 +15,7 @@ struct MarkdownView: View {
 
 class CustomWebView: WKWebView {
     var onCollect: (() -> Void)?
+    var renderedContent: String?
     override func buildMenu(with builder: UIMenuBuilder) {
         super.buildMenu(with: builder)
         let collectAction = UIAction(title: "转为卡片") { [weak self] _ in self?.onCollect?() }
@@ -74,8 +75,8 @@ private struct WebView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: CustomWebView, context: Context) {
-        if uiView.accessibilityLabel == content { return }
-        uiView.accessibilityLabel = content
+        if uiView.renderedContent == content { return }
+        uiView.renderedContent = content
         let base64Content = Data(content.utf8).base64EncodedString()
         
         let html = """

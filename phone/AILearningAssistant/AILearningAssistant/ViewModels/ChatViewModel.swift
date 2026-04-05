@@ -25,9 +25,9 @@ class ChatViewModel: ObservableObject {
             case .uploadingFile(let fileName):
                 return "正在上传 \(fileName)..."
             case .preparingDocuments(let count):
-                return count == 1 ? "正在转换文档并准备交给 AI..." : "正在转换 \(count) 个文档并准备交给 AI..."
+                return count == 1 ? "正在转换文档" : "正在转换 \(count) 个文档"
             case .requestingModel:
-                return "AI 正在解析，请稍候..."
+                return "魔法施展中..."
             }
         }
     }
@@ -95,20 +95,48 @@ class ChatViewModel: ObservableObject {
     private func presentError(_ error: Error, fallback: String) {
         let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedMessage = message.isEmpty ? fallback : message
-        activeAlert = AlertState(title: alertTitle(for: fallback), message: resolvedMessage)
-        print("\(fallback): \(error)")
+        let errorID = makeErrorID()
+        activeAlert = AlertState(
+            title: alertTitle(for: fallback, message: resolvedMessage),
+            message: "\(resolvedMessage)\n错误ID：\(errorID)"
+        )
+        print("[\(errorID)] \(fallback): \(error)")
     }
 
     func dismissAlert() {
         activeAlert = nil
     }
 
-    private func alertTitle(for fallback: String) -> String {
+    private func alertTitle(for fallback: String, message: String) -> String {
+        let lowered = message.lowercased()
+
+        if message.contains("文件太大")
+            || message.contains("空的")
+            || message.contains("类型")
+            || message.contains("文件名") {
+            return "这个文件有点问题"
+        }
+
+        if lowered.contains("网络")
+            || message.contains("没有联网")
+            || message.contains("连不上服务")
+            || message.contains("超时")
+            || message.contains("断开") {
+            return "网络出了点问题"
+        }
+
+        if message.contains("服务有点异常")
+            || message.contains("服务有点忙")
+            || message.contains("服务器处理")
+            || message.contains("服务器开小差") {
+            return "服务器开小差了"
+        }
+
         if fallback.contains("发送") {
-            return "发送失败"
+            return "消息发送失败"
         }
         if fallback.contains("上传") {
-            return "上传失败"
+            return "文件上传失败"
         }
         if fallback.contains("加载") {
             return "加载失败"
@@ -117,9 +145,13 @@ class ChatViewModel: ObservableObject {
             return "删除失败"
         }
         if fallback.contains("保存") {
-            return "保存失败"
+            return "保存未成功"
         }
-        return "操作失败"
+        return "出了点小状况"
+    }
+
+    private func makeErrorID() -> String {
+        String(UUID().uuidString.prefix(8)).uppercased()
     }
     
     func loadKnowledgeCards() async {
@@ -299,17 +331,21 @@ class ChatViewModel: ObservableObject {
 
     private func updateAttachmentState(id: UUID, state: AttachmentTransferState, uploadedPath: String? = nil) {
         guard let index = selectedAttachments.firstIndex(where: { $0.id == id }) else { return }
-        selectedAttachments[index].transferState = state
+        var updatedAttachments = selectedAttachments
+        updatedAttachments[index].transferState = state
         if let uploadedPath {
-            selectedAttachments[index].uploadedPath = uploadedPath
+            updatedAttachments[index].uploadedPath = uploadedPath
         }
+        selectedAttachments = updatedAttachments
     }
 
     private func resetAttachmentStatesToIdle() {
-        for index in selectedAttachments.indices {
-            selectedAttachments[index].transferState = .idle
-            selectedAttachments[index].uploadedPath = nil
+        var updatedAttachments = selectedAttachments
+        for index in updatedAttachments.indices {
+            updatedAttachments[index].transferState = .idle
+            updatedAttachments[index].uploadedPath = nil
         }
+        selectedAttachments = updatedAttachments
     }
 
     func sendMessage() {
@@ -471,24 +507,28 @@ class ChatViewModel: ObservableObject {
     }
 
     private func uploadAttachment(_ attachment: LocalAttachment) async throws -> UploadResponse {
-        if let data = attachment.data {
+        do {
+            if let data = attachment.data {
+                return try await NetworkManager.shared.uploadFile(
+                    data: data,
+                    fileName: attachment.displayName,
+                    mimeType: attachment.mimeType
+                )
+            }
+
+            guard let localURL = attachment.localURL else {
+                throw NetworkError.serverError(statusCode: -1, message: "找不到待上传的本地文件。")
+            }
+
+            let fileData = try await loadFileData(from: localURL)
             return try await NetworkManager.shared.uploadFile(
-                data: data,
+                data: fileData,
                 fileName: attachment.displayName,
                 mimeType: attachment.mimeType
             )
+        } catch {
+            throw contextualizedUploadError(error, fileName: attachment.displayName)
         }
-
-        guard let localURL = attachment.localURL else {
-            throw NetworkError.serverError(statusCode: -1, message: "找不到待上传的本地文件。")
-        }
-
-        let fileData = try await loadFileData(from: localURL)
-        return try await NetworkManager.shared.uploadFile(
-            data: fileData,
-            fileName: attachment.displayName,
-            mimeType: attachment.mimeType
-        )
     }
 
     nonisolated private func loadFileData(from localURL: URL) async throws -> Data {
@@ -502,5 +542,26 @@ class ChatViewModel: ObservableObject {
 
             return try Data(contentsOf: localURL)
         }.value
+    }
+
+    private func contextualizedUploadError(_ error: Error, fileName: String) -> Error {
+        let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeFileName = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !safeFileName.isEmpty else { return error }
+        guard !message.contains(safeFileName) else { return error }
+
+        if let networkError = error as? NetworkError {
+            switch networkError {
+            case .serverError(let statusCode, let message):
+                return NetworkError.serverError(statusCode: statusCode, message: "《\(safeFileName)》上传失败：\(message)")
+            case .transportError(let message):
+                return NetworkError.transportError(message: "《\(safeFileName)》上传失败：\(message)")
+            default:
+                return NetworkError.serverError(statusCode: -1, message: "《\(safeFileName)》上传失败：\(message)")
+            }
+        }
+
+        return NetworkError.serverError(statusCode: -1, message: "《\(safeFileName)》上传失败：\(message)")
     }
 }
