@@ -1,7 +1,7 @@
 import Foundation
 
 enum AppConfiguration {
-    static let defaultBaseURL = "http://localhost:8000"
+    static let defaultBaseURL = "http://192.168.1.19:8000"
 
     static var apiBaseURL: String {
         let configuredURL = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String
@@ -10,15 +10,15 @@ enum AppConfiguration {
     }
 }
 
-struct APIErrorResponse: Decodable {
+nonisolated struct APIErrorResponse: Decodable {
     let detail: String
 }
 
-struct MessageResponse: Decodable {
+nonisolated struct MessageResponse: Decodable {
     let message: String
 }
 
-struct ChatRequestBody: Encodable {
+nonisolated struct ChatRequestBody: Encodable {
     let prompt: String
     let session_id: String?
     let file_paths: [String]?
@@ -94,15 +94,21 @@ private extension NetworkError {
     }
 }
 
-class NetworkManager {
+final class NetworkManager: Sendable {
     static let shared = NetworkManager()
     let baseURL: String
+    private let session: URLSession
 
     private init(baseURL: String = AppConfiguration.apiBaseURL) {
         self.baseURL = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForResource = 45
+        configuration.waitsForConnectivity = false
+        self.session = URLSession(configuration: configuration)
     }
 
-    private func makeURL(path: String) throws -> URL {
+    nonisolated private func makeURL(path: String) throws -> URL {
         let urlString = "\(baseURL)\(path)"
         guard let url = URL(string: urlString) else {
             throw NetworkError.invalidURL(urlString)
@@ -110,25 +116,25 @@ class NetworkManager {
         return url
     }
 
-    private func send(_ request: URLRequest) async throws -> Data {
+    nonisolated private func send(_ request: URLRequest) async throws -> Data {
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await session.data(for: request)
             return try decodeResponse(data: data, response: response)
         } catch let error as URLError {
             throw NetworkError.transportError(message: NetworkError.userFriendlyTransportMessage(for: error))
         }
     }
 
-    private func send(from url: URL) async throws -> Data {
+    nonisolated private func send(from url: URL) async throws -> Data {
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            let (data, response) = try await session.data(from: url)
             return try decodeResponse(data: data, response: response)
         } catch let error as URLError {
             throw NetworkError.transportError(message: NetworkError.userFriendlyTransportMessage(for: error))
         }
     }
 
-    private func decodeResponse(data: Data, response: URLResponse) throws -> Data {
+    nonisolated private func decodeResponse(data: Data, response: URLResponse) throws -> Data {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NetworkError.invalidResponse
         }
@@ -145,10 +151,11 @@ class NetworkManager {
         return data
     }
     
-    func sendMessage(prompt: String, sessionId: String?, filePaths: [String]?) async throws -> ChatResponse {
+    nonisolated func sendMessage(prompt: String, sessionId: String?, filePaths: [String]?) async throws -> ChatResponse {
         let url = try makeURL(path: "/chat")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(
             ChatRequestBody(
@@ -162,11 +169,12 @@ class NetworkManager {
         return try JSONDecoder().decode(ChatResponse.self, from: data)
     }
     
-    func uploadFile(data: Data, fileName: String, mimeType: String) async throws -> UploadResponse {
+    nonisolated func uploadFile(data: Data, fileName: String, mimeType: String) async throws -> UploadResponse {
         let url = try makeURL(path: "/upload/file")
         let boundary = "Boundary-\(UUID().uuidString)"
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = 45
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         
         var body = Data()
@@ -177,7 +185,7 @@ class NetworkManager {
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
 
         do {
-            let (data, response) = try await URLSession.shared.upload(for: request, from: body)
+            let (data, response) = try await session.upload(for: request, from: body)
             let validatedData = try decodeResponse(data: data, response: response)
             return try JSONDecoder().decode(UploadResponse.self, from: validatedData)
         } catch let error as URLError {
@@ -185,37 +193,39 @@ class NetworkManager {
         }
     }
 
-    func getSessions() async throws -> [ChatSession] {
+    nonisolated func getSessions() async throws -> [ChatSession] {
         let url = try makeURL(path: "/sessions")
         let data = try await send(from: url)
         return try JSONDecoder().decode([ChatSession].self, from: data)
     }
     
-    func getSessionMessages(sessionId: String) async throws -> [ChatMessage] {
+    nonisolated func getSessionMessages(sessionId: String) async throws -> [ChatMessage] {
         let url = try makeURL(path: "/sessions/\(sessionId)/messages")
         let data = try await send(from: url)
         return try JSONDecoder().decode([ChatMessage].self, from: data)
     }
     
-    func deleteSession(sessionId: String) async throws {
+    nonisolated func deleteSession(sessionId: String) async throws {
         let url = try makeURL(path: "/sessions/\(sessionId)")
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
+        request.timeoutInterval = 20
 
         _ = try await send(request)
     }
 
     // MARK: - 知识卡片 API
-    func fetchKnowledgeCards() async throws -> [KnowledgeCard] {
+    nonisolated func fetchKnowledgeCards() async throws -> [KnowledgeCard] {
         let url = try makeURL(path: "/cards")
         let data = try await send(from: url)
         return try JSONDecoder().decode([KnowledgeCard].self, from: data)
     }
 
-    func createKnowledgeCard(card: KnowledgeCardCreate) async throws -> String {
+    nonisolated func createKnowledgeCard(card: KnowledgeCardCreate) async throws -> String {
         let url = try makeURL(path: "/cards")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(card)
 
@@ -224,18 +234,20 @@ class NetworkManager {
         return response.message
     }
 
-    func deleteKnowledgeCard(cardId: Int) async throws {
+    nonisolated func deleteKnowledgeCard(cardId: Int) async throws {
         let url = try makeURL(path: "/cards/\(cardId)")
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
+        request.timeoutInterval = 20
 
         _ = try await send(request)
     }
 
-    func updateKnowledgeCard(cardId: Int, card: KnowledgeCardUpdate) async throws -> String {
+    nonisolated func updateKnowledgeCard(cardId: Int, card: KnowledgeCardUpdate) async throws -> String {
         let url = try makeURL(path: "/cards/\(cardId)")
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
+        request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(card)
 

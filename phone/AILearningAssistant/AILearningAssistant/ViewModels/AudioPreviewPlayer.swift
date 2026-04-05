@@ -10,8 +10,26 @@ final class AudioPreviewPlayer: NSObject, ObservableObject {
 
     private var player: AVAudioPlayer?
     private var timer: Timer?
+    private var preparedAttachmentID: UUID?
+
+    func prepareDuration(for attachment: LocalAttachment) {
+        guard attachment.fileKind == .audio else { return }
+        guard preparedAttachmentID != attachment.id || duration == 0 else { return }
+
+        preparedAttachmentID = attachment.id
+
+        do {
+            duration = try loadDuration(for: attachment)
+            currentTime = 0
+        } catch {
+            duration = 0
+            currentTime = 0
+        }
+    }
 
     func togglePlayback(for attachment: LocalAttachment) {
+        prepareDuration(for: attachment)
+
         if isPlaying {
             stop()
             return
@@ -31,11 +49,20 @@ final class AudioPreviewPlayer: NSObject, ObservableObject {
         timer = nil
         isPlaying = false
         currentTime = 0
-        duration = 0
+
+        #if os(iOS) || os(visionOS)
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        #endif
     }
 
     private func startPlayback(for attachment: LocalAttachment) throws {
         guard attachment.fileKind == .audio else { return }
+
+        #if os(iOS) || os(visionOS)
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playback, mode: .default, options: [])
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
+        #endif
 
         let audioPlayer: AVAudioPlayer
         if let data = attachment.data {
@@ -47,9 +74,7 @@ final class AudioPreviewPlayer: NSObject, ObservableObject {
                     localURL.stopAccessingSecurityScopedResource()
                 }
             }
-
-            let fileData = try Data(contentsOf: localURL)
-            audioPlayer = try AVAudioPlayer(data: fileData)
+            audioPlayer = try AVAudioPlayer(contentsOf: localURL)
         } else {
             throw AudioPreviewError.fileUnavailable
         }
@@ -60,6 +85,7 @@ final class AudioPreviewPlayer: NSObject, ObservableObject {
             throw AudioPreviewError.unableToPlay
         }
 
+        preparedAttachmentID = attachment.id
         player = audioPlayer
         duration = audioPlayer.duration
         currentTime = audioPlayer.currentTime
@@ -76,6 +102,24 @@ final class AudioPreviewPlayer: NSObject, ObservableObject {
                 self.duration = player.duration
             }
         }
+    }
+
+    private func loadDuration(for attachment: LocalAttachment) throws -> TimeInterval {
+        if let data = attachment.data {
+            return try AVAudioPlayer(data: data).duration
+        }
+
+        if let localURL = attachment.localURL {
+            let hasAccess = localURL.startAccessingSecurityScopedResource()
+            defer {
+                if hasAccess {
+                    localURL.stopAccessingSecurityScopedResource()
+                }
+            }
+            return try AVAudioPlayer(contentsOf: localURL).duration
+        }
+
+        throw AudioPreviewError.fileUnavailable
     }
 }
 

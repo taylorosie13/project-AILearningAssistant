@@ -117,7 +117,7 @@ final class VoiceInputController: NSObject, ObservableObject {
         }
 
         let outputURL = makeRecordingURL()
-        audioFile = try AVAudioFile(forWriting: outputURL, settings: format.settings)
+        audioFile = try AVAudioFile(forWriting: outputURL, settings: recordingSettings(for: format))
         currentRecordingURL = outputURL
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
@@ -247,6 +247,16 @@ final class VoiceInputController: NSObject, ObservableObject {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("audio-recording-\(UUID().uuidString)")
             .appendingPathExtension("m4a")
+    }
+
+    private func recordingSettings(for format: AVAudioFormat) -> [String: Any] {
+        [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: format.sampleRate,
+            AVNumberOfChannelsKey: Int(format.channelCount),
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+            AVEncoderBitRateKey: 128_000,
+        ]
     }
 
     private static let timestampFormatter: DateFormatter = {

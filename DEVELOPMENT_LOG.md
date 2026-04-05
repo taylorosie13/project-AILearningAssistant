@@ -1,7 +1,7 @@
 # 项目开发进度与优化备忘录 (Development Log)
 
-**最后更新：** 2026-04-01  
-**当前版本：** v1.8 (Voice Workspace and Audio Recording Flow)
+**最后更新：** 2026-04-05  
+**当前版本：** v1.9 (Launch Onboarding and Local Network Access)
 
 ---
 
@@ -31,6 +31,9 @@
 - **语音转写工作台**：已支持录音、实时转写、保存本地语音内容、将语音附件带回聊天输入区，并支持已保存内容列表管理。
 - **语音文本可编辑**：待处理转写结果支持直接修改；已保存的语音转写内容也支持二次编辑后写回本地存储。
 - **录音交互收口**：语音页已修复双返回按钮、保存后旧转写残留、录音页误触自动发送等体验问题，并为录音按钮增加状态切换保护。
+- **启动引导页**：应用已新增启动阶段的引导页面，用来在正式进入主界面前集中检查关键权限和连接状态。
+- **权限检查收口**：已开始统一处理相机、相册、麦克风、语音识别和本地网络权限，并给出更接近用户场景的提示文案。
+- **局域网后端接入**：iOS 端已切换为通过局域网地址访问本地 FastAPI 服务，网络层也增加了超时和连接策略设置，方便真机直连调试。
 - **知识卡片管理**：
   - 支持从聊天消息收藏为卡片
   - 支持编辑已有卡片
@@ -52,6 +55,8 @@
 - 增加 Office 文档到 PDF 的转换流程，并在 Gemini 不支持原始 Office MIME 的前提下改为上传转换后的 PDF。
 - 为 Gemini 文件上传和模型生成都补了网络异常识别与重试逻辑。
 - 增加启动清理和手动维护接口，用于回收过期 `/tmp/office-to-pdf-*` 临时目录与孤儿上传文件。
+- FastAPI 服务启动流程已改为 `lifespan` 方式管理初始化清理逻辑，减少旧式启动钩子带来的维护成本。
+- 本地服务监听地址已切到 `0.0.0.0`，为 iPhone 真机通过局域网访问后端做准备。
 
 ### iOS
 - `API_BASE_URL` 改为从 build settings / Info.plist 读取，不再硬编码在源码里。
@@ -66,6 +71,9 @@
   - 在已保存内容列表中播放音频和编辑转写文本
 - 新增 `AudioRecorderController`、`AudioPreviewPlayer`、`VoiceCaptureStore` 等语音模块基础组件。
 - 录音流程增加防重复触发、无可用麦克风输入的显式错误提示，并通过本地构建验证修复了编译阻塞问题。
+- 新增启动引导视图与启动状态控制，应用启动时会先检查权限和本地服务连接条件，再进入主界面。
+- `NetworkManager` 已补充统一 `URLSession` 配置、请求超时和连接策略，当前默认走局域网地址访问本地后端。
+- 已开始处理“本地网络权限被拒绝时前端如何提示用户”这条链路，日志里已能定位 `NSURLErrorDomain -1009` 与 `Local network prohibited` 场景。
 - 卡片编辑弹窗支持两种模式：
   - 新建卡片
   - 编辑已有卡片
@@ -96,6 +104,10 @@
   负责麦克风权限、实时转写、录音文件生成和录音状态保护。
 - [VoiceCaptureStore.swift](/Users/taylorosie13/project-AILearningAssistant/phone/AILearningAssistant/AILearningAssistant/ViewModels/VoiceCaptureStore.swift)
   负责本地语音内容的保存、更新和删除。
+- [AppLaunchView.swift](/Users/taylorosie13/project-AILearningAssistant/phone/AILearningAssistant/AILearningAssistant/Views/AppLaunchView.swift)
+  负责启动引导页、权限状态展示和本地网络可用性检查。
+- [AILearningAssistantApp.swift](/Users/taylorosie13/project-AILearningAssistant/phone/AILearningAssistant/AILearningAssistant/AILearningAssistantApp.swift)
+  当前通过启动层控制真正进入聊天主界面的时机。
 
 ### 当前已知注意点
 - `MarkdownView.swift` 仍依赖 CDN 加载 `MathJax` 和 `marked`，离线环境下可能影响公式/Markdown 渲染。
@@ -105,35 +117,40 @@
 - Office 文档转 PDF 依赖本机 LibreOffice；若路径变化，需要同步调整后端检测逻辑。
 - 当前旧格式 `doc/ppt/xls` 与现代格式 `docx/pptx/xlsx` 共用转换链路，但仍建议继续验证更多边缘样本文件。
 - 录音文件当前走 `.m4a` 上传链路，建议继续在真机上验证不同输入设备下的稳定性。
+- 当前 iOS 默认通过 `http://192.168.1.19:8000` 访问本地后端，这意味着真机必须与开发机在同一局域网，并且要允许本地网络权限。
+- 当前日志已经出现 `NSURLErrorDomain Code=-1009` 且提示 `Local network prohibited`，说明“权限被拒绝时如何解释原因并引导用户处理”仍是当下要收尾的重点。
 
 ---
 
 ## 4. 推荐的下一步开发方向
 
 ### 优先推荐
-1. **上传前本地大小检查**
+1. **启动引导与本地网络权限收尾**
+   继续把启动页和权限检查做完整，重点处理“无法连接本地后端”时的提示、重试和引导文案。
+2. **真机联调局域网后端**
+   用真实设备验证同网段访问、本地网络权限弹窗、后端可达性和错误提示是否一致。
+3. **上传前本地大小检查**
    在 iOS 端选中文件时就拦截超过 20MB 的附件，减少无效上传。
-2. **LibreOffice 转换超时与日志增强**
-   为文档转 PDF 增加超时控制和更细的错误日志，便于排查边缘文件。
-3. **图片查看体验**
-   聊天图片支持点击全屏预览。
 
 ### 第二梯队
-1. **会话搜索**
+1. **LibreOffice 转换超时与日志增强**
+   为文档转 PDF 增加超时控制和更细的错误日志，便于排查边缘文件。
+2. **会话搜索**
    在历史会话中按预览内容进行检索。
-2. **知识卡片来源回跳**
+3. **知识卡片来源回跳**
    从卡片回到原始会话。
-3. **后端分层**
+4. **后端分层**
    将 Gemini 调用、数据库访问、文件处理继续拆到 service 层。
 
 ---
 
 ## 5. 本次提交前说明
 
-- 本次开发已覆盖后端与 iOS 两端，核心主题是“统一文件上传与办公文档处理闭环”。
+- 本轮代码相较于上次日志，重点已经从“语音工作台和统一附件上传”延伸到“启动引导、权限检查和局域网后端联调”。
 - 本次提交建议包含：
-  - 后端文件上传、Office 转 PDF、Gemini 上传重试、临时文件清理
-  - iOS 附件输入、附件状态、非阻塞错误提示
+  - 启动引导、本地网络权限检查、局域网访问后端
+  - 语音工作台与统一附件输入的已完成能力
+  - 后端启动清理、局域网监听与文档处理链路
 - 工作区里仍存在与本次提交无关的本地文件：
   - [NEXT_DEVELOPMENT_PLAN.md](/Users/taylorosie13/project-AILearningAssistant/NEXT_DEVELOPMENT_PLAN.md)
 - 提交 git 时建议不要把无关文件混进本次功能提交。

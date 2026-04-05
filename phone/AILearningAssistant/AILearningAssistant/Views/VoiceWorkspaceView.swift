@@ -57,6 +57,9 @@ struct VoiceWorkspaceView: View {
                 }
             }
         }
+        .task {
+            store.ensureLoaded()
+        }
         .onDisappear {
             voiceInputController.cancelRecording()
         }

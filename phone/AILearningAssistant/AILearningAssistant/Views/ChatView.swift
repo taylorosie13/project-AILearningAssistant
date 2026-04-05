@@ -13,6 +13,7 @@ struct AppTheme {
 }
 
 struct ChatView: View {
+    @AppStorage(LaunchPermissionViewModel.localNetworkApprovalKey) private var startupLocalNetworkApproved = false
     @StateObject private var viewModel = ChatViewModel()
     @StateObject private var voiceCaptureStore = VoiceCaptureStore()
     @State private var selectedItems: [PhotosPickerItem] = []
@@ -181,6 +182,12 @@ struct ChatView: View {
                         viewModel.addPickedImage(image)
                         cameraImage = nil
                     }
+                }
+                .task {
+                    guard startupLocalNetworkApproved else { return }
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    guard !Task.isCancelled else { return }
+                    viewModel.loadInitialDataIfNeeded()
                 }
             }
             .preferredColorScheme(.light)
@@ -450,6 +457,10 @@ struct SidebarView: View {
             .shadow(color: Color.black.opacity(0.15), radius: 20, x: 5, y: 0)
             
             Spacer()
+        }
+        .task(id: showSidebar) {
+            guard showSidebar else { return }
+            voiceCaptureStore.ensureLoaded()
         }
     }
 }
@@ -799,6 +810,9 @@ struct AudioAttachmentPreviewCard: View {
         .background(Color.white.opacity(0.9))
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .shadow(color: AppTheme.shadow, radius: 4, x: 0, y: 2)
+        .task(id: attachment.id) {
+            player.prepareDuration(for: attachment)
+        }
     }
 
     private var playbackProgress: CGFloat {

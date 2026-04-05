@@ -2,7 +2,7 @@ import Foundation
 import UniformTypeIdentifiers
 import UIKit
 
-enum AttachmentKind: String, Codable {
+nonisolated enum AttachmentKind: String, Codable {
     case image
     case document
     case audio
@@ -230,7 +230,7 @@ extension UTType {
     }
 }
 
-struct ChatMessage: Identifiable, Codable {
+nonisolated struct ChatMessage: Identifiable, Codable {
     let id: UUID
     let role: String
     let content: String
@@ -264,12 +264,12 @@ struct ChatMessage: Identifiable, Codable {
     }
 }
 
-struct ChatResponse: Codable {
+nonisolated struct ChatResponse: Codable {
     let session_id: String
     let response: String
 }
 
-struct ChatSession: Identifiable, Codable {
+nonisolated struct ChatSession: Identifiable, Codable {
     let id: String
     let created_at: String
     let preview: String?
@@ -280,7 +280,7 @@ struct ChatSession: Identifiable, Codable {
     }
 }
 
-struct UploadResponse: Codable {
+nonisolated struct UploadResponse: Codable {
     let message: String
     let file_path: String
     let original_filename: String
@@ -290,7 +290,7 @@ struct UploadResponse: Codable {
 }
 
 // MARK: - 知识卡片相关模型
-struct KnowledgeCard: Identifiable, Codable {
+nonisolated struct KnowledgeCard: Identifiable, Codable {
     let id: Int
     let title: String
     let content: String
@@ -316,7 +316,7 @@ struct KnowledgeCard: Identifiable, Codable {
     }
 }
 
-struct KnowledgeCardCreate: Codable {
+nonisolated struct KnowledgeCardCreate: Codable {
     let title: String
     let content: String
     let category: String?
@@ -324,7 +324,7 @@ struct KnowledgeCardCreate: Codable {
     let source_session_id: String?
 }
 
-struct KnowledgeCardUpdate: Codable {
+nonisolated struct KnowledgeCardUpdate: Codable {
     let title: String
     let content: String
     let category: String?

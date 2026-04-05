@@ -75,13 +75,20 @@ class ChatViewModel: ObservableObject {
     private var activeSendID = UUID()
     private var sessionLoadTask: Task<Void, Never>?
     private var sendTask: Task<Void, Never>?
+    private var hasLoadedInitialData = false
     
     var currentSessionId: String? = nil
     
-    init() {
+    init() {}
+
+    func loadInitialDataIfNeeded() {
+        guard !hasLoadedInitialData else { return }
+        hasLoadedInitialData = true
+
         Task {
-            await loadSessions()
-            await loadKnowledgeCards()
+            async let sessionsTask: Void = loadSessions()
+            async let knowledgeCardsTask: Void = loadKnowledgeCards()
+            _ = await (sessionsTask, knowledgeCardsTask)
         }
     }
 
@@ -476,18 +483,24 @@ class ChatViewModel: ObservableObject {
             throw NetworkError.serverError(statusCode: -1, message: "找不到待上传的本地文件。")
         }
 
-        let hasAccess = localURL.startAccessingSecurityScopedResource()
-        defer {
-            if hasAccess {
-                localURL.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        let fileData = try Data(contentsOf: localURL)
+        let fileData = try await loadFileData(from: localURL)
         return try await NetworkManager.shared.uploadFile(
             data: fileData,
             fileName: attachment.displayName,
             mimeType: attachment.mimeType
         )
+    }
+
+    nonisolated private func loadFileData(from localURL: URL) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) {
+            let hasAccess = localURL.startAccessingSecurityScopedResource()
+            defer {
+                if hasAccess {
+                    localURL.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            return try Data(contentsOf: localURL)
+        }.value
     }
 }

@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-struct SavedVoiceCapture: Identifiable, Codable, Equatable {
+nonisolated struct SavedVoiceCapture: Identifiable, Codable, Equatable {
     let id: UUID
     var transcript: String
     let languageCode: String
@@ -17,9 +17,10 @@ struct SavedVoiceCapture: Identifiable, Codable, Equatable {
 @MainActor
 final class VoiceCaptureStore: ObservableObject {
     @Published private(set) var captures: [SavedVoiceCapture] = []
+    @Published private(set) var hasLoaded = false
 
-    private static let metadataURL = audioDirectory.appendingPathComponent("voice-captures.json")
-    static let audioDirectory: URL = {
+    nonisolated private static let metadataURL = audioDirectory.appendingPathComponent("voice-captures.json")
+    nonisolated static let audioDirectory: URL = {
         let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         let directory = baseURL.appendingPathComponent("VoiceCaptures", isDirectory: true)
@@ -27,8 +28,17 @@ final class VoiceCaptureStore: ObservableObject {
         return directory
     }()
 
-    init() {
-        load()
+    private var loadTask: Task<Void, Never>?
+
+    init() {}
+
+    func ensureLoaded() {
+        guard !hasLoaded, loadTask == nil else { return }
+        loadTask = Task { [weak self] in
+            guard let self else { return }
+            await self.load()
+            self.loadTask = nil
+        }
     }
 
     func saveCapture(transcript: String, language: TranscriptionLanguage, attachment: LocalAttachment) throws {
@@ -69,12 +79,10 @@ final class VoiceCaptureStore: ObservableObject {
         try persist()
     }
 
-    private func load() {
-        guard let data = try? Data(contentsOf: Self.metadataURL) else { return }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let decoded = try? decoder.decode([SavedVoiceCapture].self, from: data) else { return }
-        captures = decoded.filter { FileManager.default.fileExists(atPath: $0.audioURL.path) }
+    private func load() async {
+        let loadedCaptures = await Self.loadCapturesFromDisk()
+        captures = loadedCaptures
+        hasLoaded = true
     }
 
     private func persist() throws {
@@ -83,6 +91,16 @@ final class VoiceCaptureStore: ObservableObject {
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(captures)
         try data.write(to: Self.metadataURL, options: .atomic)
+    }
+
+    nonisolated private static func loadCapturesFromDisk() async -> [SavedVoiceCapture] {
+        await Task.detached(priority: .utility) {
+            guard let data = try? Data(contentsOf: metadataURL) else { return [] }
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            guard let decoded = try? decoder.decode([SavedVoiceCapture].self, from: data) else { return [] }
+            return decoded.filter { FileManager.default.fileExists(atPath: $0.audioURL.path) }
+        }.value
     }
 }
 

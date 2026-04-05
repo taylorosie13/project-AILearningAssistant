@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import uuid
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import cast, BinaryIO
 from fastapi import FastAPI, HTTPException, UploadFile, File
@@ -72,21 +73,22 @@ TEXT_FILE_EXTENSIONS = {".txt", ".md"}
 # 在程序启动时执行数据库初始化
 init_db()
 
-# 初始化FastAPI应用
-app = FastAPI(title="Multimodal Learning Assistant API")
-
-# 挂载静态文件目录，允许前端通过 /uploads/... 访问已上传的文件
-app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
-
-
-@app.on_event("startup")
-async def startup_cleanup_temp_files():
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     cleanup_result = run_temp_file_cleanup()
     print(
         "🧹 启动清理完成: "
         f"{cleanup_result['removed_temp_dirs']} 个临时目录, "
         f"{cleanup_result['removed_orphan_uploads']} 个孤儿上传文件"
     )
+    yield
+
+
+# 初始化FastAPI应用
+app = FastAPI(title="Multimodal Learning Assistant API", lifespan=lifespan)
+
+# 挂载静态文件目录，允许前端通过 /uploads/... 访问已上传的文件
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 # 显式读取环境变量以进行调试和赋值
 api_key = os.getenv("GEMINI_API_KEY")
@@ -856,4 +858,4 @@ if __name__ == "__main__":
     import uvicorn
 
     # 只监听本机回环地址，避免服务暴露给局域网或更外层网络
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
