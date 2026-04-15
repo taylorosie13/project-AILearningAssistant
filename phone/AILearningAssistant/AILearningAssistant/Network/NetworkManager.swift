@@ -1,7 +1,70 @@
 import Foundation
 
+private final class UploadTaskDelegate: NSObject, URLSessionTaskDelegate, URLSessionDataDelegate {
+    private let onProgress: @Sendable (Double) -> Void
+    private let onServerProcessing: @Sendable () -> Void
+    private let completion: (Result<(Data, URLResponse), Error>) -> Void
+    private var responseData = Data()
+    private var response: URLResponse?
+    private var hasEnteredServerProcessing = false
+
+    init(
+        onProgress: @escaping @Sendable (Double) -> Void,
+        onServerProcessing: @escaping @Sendable () -> Void,
+        completion: @escaping (Result<(Data, URLResponse), Error>) -> Void
+    ) {
+        self.onProgress = onProgress
+        self.onServerProcessing = onServerProcessing
+        self.completion = completion
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didSendBodyData bytesSent: Int64,
+        totalBytesSent: Int64,
+        totalBytesExpectedToSend: Int64
+    ) {
+        guard totalBytesExpectedToSend > 0 else { return }
+        let progress = min(max(Double(totalBytesSent) / Double(totalBytesExpectedToSend), 0), 1)
+        if progress >= 1 {
+            if !hasEnteredServerProcessing {
+                hasEnteredServerProcessing = true
+                onProgress(0.9)
+                onServerProcessing()
+            }
+            return
+        }
+        onProgress(progress * 0.9)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        responseData.append(data)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse) async -> URLSession.ResponseDisposition {
+        self.response = response
+        return .allow
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            completion(.failure(error))
+            return
+        }
+
+        guard let response else {
+            completion(.failure(NetworkError.invalidResponse))
+            return
+        }
+
+        onProgress(1)
+        completion(.success((responseData, response)))
+    }
+}
+
 enum AppConfiguration {
-    static let defaultBaseURL = "http://192.168.1.19:8000"
+    static let defaultBaseURL = "http://localhost:8000"
 
     static var apiBaseURL: String {
         let configuredURL = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String
@@ -74,11 +137,11 @@ private extension NetworkError {
         }
 
         if lowered.contains("文件过大") || statusCode == 413 {
-            return "文件太大了，请上传20MB以内的文件。"
+            return trimmed
         }
 
         if lowered.contains("暂不支持该文件类型上传") {
-            return "当前还不支持这种文件类型。请换成PDF、图片、音频或常见文档格式后再试。"
+            return "当前还不支持这种文件类型。请换成图片、音频、视频、PDF或常见文档格式后再试。"
         }
 
         if lowered.contains("api key 无效") || lowered.contains("权限不足") {
@@ -120,14 +183,21 @@ final class NetworkManager: Sendable {
     static let shared = NetworkManager()
     let baseURL: String
     private let session: URLSession
+    private let longRunningSession: URLSession
 
     private init(baseURL: String = AppConfiguration.apiBaseURL) {
         self.baseURL = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let configuration = URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = 20
-        configuration.timeoutIntervalForResource = 45
+        configuration.timeoutIntervalForRequest = 60
+        configuration.timeoutIntervalForResource = 60 * 10
         configuration.waitsForConnectivity = false
         self.session = URLSession(configuration: configuration)
+
+        let longRunningConfiguration = URLSessionConfiguration.default
+        longRunningConfiguration.timeoutIntervalForRequest = 60
+        longRunningConfiguration.timeoutIntervalForResource = 60 * 60
+        longRunningConfiguration.waitsForConnectivity = false
+        self.longRunningSession = URLSession(configuration: longRunningConfiguration)
     }
 
     nonisolated private func makeURL(path: String) throws -> URL {
@@ -138,9 +208,10 @@ final class NetworkManager: Sendable {
         return url
     }
 
-    nonisolated private func send(_ request: URLRequest) async throws -> Data {
+    nonisolated private func send(_ request: URLRequest, using transportSession: URLSession? = nil) async throws -> Data {
         do {
-            let (data, response) = try await session.data(for: request)
+            let activeSession = transportSession ?? session
+            let (data, response) = try await activeSession.data(for: request)
             return try decodeResponse(data: data, response: response)
         } catch let error as URLError {
             throw NetworkError.transportError(message: NetworkError.userFriendlyTransportMessage(for: error))
@@ -177,7 +248,7 @@ final class NetworkManager: Sendable {
         let url = try makeURL(path: "/chat")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 20
+        request.timeoutInterval = 60 * 60
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(
             ChatRequestBody(
@@ -187,11 +258,17 @@ final class NetworkManager: Sendable {
             )
         )
 
-        let data = try await send(request)
+        let data = try await send(request, using: longRunningSession)
         return try JSONDecoder().decode(ChatResponse.self, from: data)
     }
     
-    nonisolated func uploadFile(data: Data, fileName: String, mimeType: String) async throws -> UploadResponse {
+    nonisolated func uploadFile(
+        data: Data,
+        fileName: String,
+        mimeType: String,
+        onProgress: @escaping @Sendable (Double) -> Void = { _ in },
+        onServerProcessing: @escaping @Sendable () -> Void = {}
+    ) async throws -> UploadResponse {
         let url = try makeURL(path: "/upload/file")
         let boundary = "Boundary-\(UUID().uuidString)"
         var request = URLRequest(url: url)
@@ -207,11 +284,148 @@ final class NetworkManager: Sendable {
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
 
         do {
-            let (data, response) = try await session.upload(for: request, from: body)
+            let (data, response) = try await performUpload(
+                request: request,
+                body: body,
+                onProgress: onProgress,
+                onServerProcessing: onServerProcessing
+            )
             let validatedData = try decodeResponse(data: data, response: response)
             return try JSONDecoder().decode(UploadResponse.self, from: validatedData)
         } catch let error as URLError {
             throw NetworkError.transportError(message: NetworkError.userFriendlyTransportMessage(for: error))
+        }
+    }
+
+    nonisolated func uploadFile(
+        fileURL: URL,
+        fileName: String,
+        mimeType: String,
+        onProgress: @escaping @Sendable (Double) -> Void = { _ in },
+        onServerProcessing: @escaping @Sendable () -> Void = {}
+    ) async throws -> UploadResponse {
+        let url = try makeURL(path: "/upload/file")
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60 * 60
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        let multipartFileURL = try createMultipartUploadFile(
+            sourceFileURL: fileURL,
+            fileName: fileName,
+            mimeType: mimeType,
+            boundary: boundary
+        )
+
+        defer {
+            try? FileManager.default.removeItem(at: multipartFileURL)
+        }
+
+        do {
+            let (data, response) = try await performUpload(
+                request: request,
+                fileURL: multipartFileURL,
+                onProgress: onProgress,
+                onServerProcessing: onServerProcessing
+            )
+            let validatedData = try decodeResponse(data: data, response: response)
+            return try JSONDecoder().decode(UploadResponse.self, from: validatedData)
+        } catch let error as URLError {
+            throw NetworkError.transportError(message: NetworkError.userFriendlyTransportMessage(for: error))
+        }
+    }
+
+    nonisolated private func createMultipartUploadFile(
+        sourceFileURL: URL,
+        fileName: String,
+        mimeType: String,
+        boundary: String
+    ) throws -> URL {
+        let hasAccess = sourceFileURL.startAccessingSecurityScopedResource()
+        defer {
+            if hasAccess {
+                sourceFileURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let multipartFileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("upload-\(UUID().uuidString)")
+            .appendingPathExtension("multipart")
+
+        FileManager.default.createFile(atPath: multipartFileURL.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: multipartFileURL)
+        defer { try? handle.close() }
+
+        let header = "--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\nContent-Type: \(mimeType)\r\n\r\n"
+        if let headerData = header.data(using: .utf8) {
+            handle.write(headerData)
+        }
+
+        let sourceHandle = try FileHandle(forReadingFrom: sourceFileURL)
+        defer { try? sourceHandle.close() }
+
+        while autoreleasepool(invoking: {
+            let chunk = sourceHandle.readData(ofLength: 1024 * 1024)
+            guard !chunk.isEmpty else { return false }
+            handle.write(chunk)
+            return true
+        }) {}
+
+        if let footerData = "\r\n--\(boundary)--\r\n".data(using: .utf8) {
+            handle.write(footerData)
+        }
+
+        return multipartFileURL
+    }
+
+    nonisolated private func performUpload(
+        request: URLRequest,
+        body: Data,
+        onProgress: @escaping @Sendable (Double) -> Void,
+        onServerProcessing: @escaping @Sendable () -> Void
+    ) async throws -> (Data, URLResponse) {
+        try await withCheckedThrowingContinuation { continuation in
+            var uploadSession: URLSession?
+            let delegate = UploadTaskDelegate(
+                onProgress: onProgress,
+                onServerProcessing: onServerProcessing
+            ) { result in
+                uploadSession?.invalidateAndCancel()
+                continuation.resume(with: result)
+            }
+
+            let configuration = URLSessionConfiguration.default
+            configuration.timeoutIntervalForRequest = 45
+            configuration.timeoutIntervalForResource = 60 * 60
+            uploadSession = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+            let task = uploadSession!.uploadTask(with: request, from: body)
+            task.resume()
+        }
+    }
+
+    nonisolated private func performUpload(
+        request: URLRequest,
+        fileURL: URL,
+        onProgress: @escaping @Sendable (Double) -> Void,
+        onServerProcessing: @escaping @Sendable () -> Void
+    ) async throws -> (Data, URLResponse) {
+        try await withCheckedThrowingContinuation { continuation in
+            var uploadSession: URLSession?
+            let delegate = UploadTaskDelegate(
+                onProgress: onProgress,
+                onServerProcessing: onServerProcessing
+            ) { result in
+                uploadSession?.invalidateAndCancel()
+                continuation.resume(with: result)
+            }
+
+            let configuration = URLSessionConfiguration.default
+            configuration.timeoutIntervalForRequest = 60
+            configuration.timeoutIntervalForResource = 60 * 60
+            uploadSession = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+            let task = uploadSession!.uploadTask(with: request, fromFile: fileURL)
+            task.resume()
         }
     }
 

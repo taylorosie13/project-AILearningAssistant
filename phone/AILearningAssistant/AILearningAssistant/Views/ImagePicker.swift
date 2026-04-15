@@ -70,8 +70,6 @@ private struct CameraCaptureView: View {
         GeometryReader { geometry in
             let safeTop = geometry.safeAreaInsets.top
             let safeBottom = geometry.safeAreaInsets.bottom
-            let guideWidth = min(geometry.size.width * 0.88, 356)
-            let guideHeight = min(geometry.size.height * 0.66, 510)
 
             ZStack {
                 CameraPreviewView(session: camera.session)
@@ -125,27 +123,6 @@ private struct CameraCaptureView: View {
                         .padding(.top, max(safeTop - 18, 0))
 
                         Spacer(minLength: 2)
-
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 28)
-                                .stroke(Color.yellow.opacity(0.96), lineWidth: 1.5)
-                                .frame(width: guideWidth, height: guideHeight)
-
-                            VStack {
-                                HStack {
-                                    framingCorner(.topLeading)
-                                    Spacer()
-                                    framingCorner(.topTrailing)
-                                }
-                                Spacer()
-                                HStack {
-                                    framingCorner(.bottomLeading)
-                                    Spacer()
-                                    framingCorner(.bottomTrailing)
-                                }
-                            }
-                            .frame(width: guideWidth + 18, height: guideHeight + 18)
-                        }
 
                         Spacer()
 
@@ -240,41 +217,6 @@ private struct CameraCaptureView: View {
                 .clipShape(Circle())
         }
         .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private func framingCorner(_ position: CornerPosition) -> some View {
-        Path { path in
-            let length: CGFloat = 22
-
-            switch position {
-            case .topLeading:
-                path.move(to: CGPoint(x: length, y: 0))
-                path.addLine(to: CGPoint(x: 0, y: 0))
-                path.addLine(to: CGPoint(x: 0, y: length))
-            case .topTrailing:
-                path.move(to: CGPoint(x: 0, y: 0))
-                path.addLine(to: CGPoint(x: length, y: 0))
-                path.addLine(to: CGPoint(x: length, y: length))
-            case .bottomLeading:
-                path.move(to: CGPoint(x: 0, y: 0))
-                path.addLine(to: CGPoint(x: 0, y: length))
-                path.addLine(to: CGPoint(x: length, y: length))
-            case .bottomTrailing:
-                path.move(to: CGPoint(x: 0, y: length))
-                path.addLine(to: CGPoint(x: length, y: length))
-                path.addLine(to: CGPoint(x: length, y: 0))
-            }
-        }
-        .stroke(Color.yellow, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
-        .frame(width: 22, height: 22)
-    }
-
-    private enum CornerPosition {
-        case topLeading
-        case topTrailing
-        case bottomLeading
-        case bottomTrailing
     }
 }
 

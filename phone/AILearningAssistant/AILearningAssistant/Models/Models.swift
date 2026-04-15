@@ -6,6 +6,7 @@ nonisolated enum AttachmentKind: String, Codable {
     case image
     case document
     case audio
+    case video
 
     var displayName: String {
         switch self {
@@ -15,6 +16,8 @@ nonisolated enum AttachmentKind: String, Codable {
             return "文档"
         case .audio:
             return "音频"
+        case .video:
+            return "视频"
         }
     }
 
@@ -26,6 +29,8 @@ nonisolated enum AttachmentKind: String, Codable {
             return "doc.text"
         case .audio:
             return "waveform"
+        case .video:
+            return "video"
         }
     }
 }
@@ -33,6 +38,7 @@ nonisolated enum AttachmentKind: String, Codable {
 enum AttachmentTransferState: Equatable {
     case idle
     case uploading
+    case processing
     case uploaded
     case failed
 
@@ -42,6 +48,8 @@ enum AttachmentTransferState: Equatable {
             return "待发送"
         case .uploading:
             return "上传中"
+        case .processing:
+            return "处理中"
         case .uploaded:
             return "已就绪"
         case .failed:
@@ -55,6 +63,8 @@ enum AttachmentTransferState: Equatable {
             return "clock"
         case .uploading:
             return "arrow.up.circle"
+        case .processing:
+            return "sparkles"
         case .uploaded:
             return "checkmark.circle"
         case .failed:
@@ -73,6 +83,7 @@ struct LocalAttachment: Identifiable, Equatable {
     let previewImage: UIImage?
     var uploadedPath: String?
     var transferState: AttachmentTransferState
+    var uploadProgress: Double
 
     init(
         id: UUID = UUID(),
@@ -83,7 +94,8 @@ struct LocalAttachment: Identifiable, Equatable {
         data: Data? = nil,
         previewImage: UIImage? = nil,
         uploadedPath: String? = nil,
-        transferState: AttachmentTransferState = .idle
+        transferState: AttachmentTransferState = .idle,
+        uploadProgress: Double = 0
     ) {
         self.id = id
         self.displayName = displayName
@@ -94,6 +106,7 @@ struct LocalAttachment: Identifiable, Equatable {
         self.previewImage = previewImage
         self.uploadedPath = uploadedPath
         self.transferState = transferState
+        self.uploadProgress = uploadProgress
     }
 
     static func == (lhs: LocalAttachment, rhs: LocalAttachment) -> Bool {
@@ -101,7 +114,7 @@ struct LocalAttachment: Identifiable, Equatable {
     }
 
     var renderIdentity: String {
-        "\(id.uuidString)-\(transferState.displayText)-\(uploadedPath ?? "")"
+        "\(id.uuidString)-\(transferState.displayText)-\(Int(uploadProgress * 100))-\(uploadedPath ?? "")"
     }
 
     var requiresServerDocumentPreparation: Bool {
@@ -140,6 +153,7 @@ struct MessageAttachment: Identifiable, Hashable {
 enum AttachmentTypeResolver {
     nonisolated private static let imageExtensions = Set(["jpg", "jpeg", "png", "heic", "gif", "webp"])
     nonisolated private static let documentExtensions = Set(["pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "txt", "md"])
+    nonisolated private static let videoExtensions = Set(["mp4", "mov", "m4v"])
 
     nonisolated static func kind(forPath path: String) -> AttachmentKind {
         let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
@@ -149,12 +163,18 @@ enum AttachmentTypeResolver {
         if documentExtensions.contains(ext) {
             return .document
         }
+        if videoExtensions.contains(ext) {
+            return .video
+        }
         return .audio
     }
 
     nonisolated static func kind(for type: UTType) -> AttachmentKind {
         if type.conforms(to: .image) {
             return .image
+        }
+        if type.conforms(to: .movie) || type.conforms(to: .video) {
+            return .video
         }
         if type.conforms(to: .audio) || type.conforms(to: .mpeg4Movie) {
             return .audio
@@ -204,7 +224,11 @@ enum AttachmentTypeResolver {
         case "aac":
             return "audio/aac"
         case "mp4":
-            return "audio/mp4"
+            return "video/mp4"
+        case "mov":
+            return "video/quicktime"
+        case "m4v":
+            return "video/x-m4v"
         default:
             return "application/octet-stream"
         }
@@ -219,6 +243,7 @@ extension UTType {
             .plainText,
             .text,
             .audio,
+            .movie,
             UTType(filenameExtension: "doc") ?? .data,
             UTType(filenameExtension: "docx") ?? .data,
             UTType(filenameExtension: "ppt") ?? .data,
@@ -230,6 +255,9 @@ extension UTType {
             UTType(filenameExtension: "mp3") ?? .audio,
             UTType(filenameExtension: "wav") ?? .audio,
             UTType(filenameExtension: "aac") ?? .audio,
+            UTType(filenameExtension: "mp4") ?? .movie,
+            UTType(filenameExtension: "mov") ?? .movie,
+            UTType(filenameExtension: "m4v") ?? .movie,
         ]
     }
 }

@@ -2,6 +2,36 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 
+struct PickedMediaFile: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .movie) { received in
+            return Self(url: try copyPickedMediaFile(from: received.file))
+        }
+        FileRepresentation(importedContentType: .mpeg4Movie) { received in
+            return Self(url: try copyPickedMediaFile(from: received.file))
+        }
+        FileRepresentation(importedContentType: .quickTimeMovie) { received in
+            return Self(url: try copyPickedMediaFile(from: received.file))
+        }
+    }
+
+    private static func copyPickedMediaFile(from sourceURL: URL) throws -> URL {
+        let pathExtension = sourceURL.pathExtension.isEmpty ? "mov" : sourceURL.pathExtension
+        let destinationURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("picked-media-\(UUID().uuidString)")
+            .appendingPathExtension(pathExtension)
+
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            try FileManager.default.removeItem(at: destinationURL)
+        }
+
+        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        return destinationURL
+    }
+}
+
 // MARK: - 主题配色
 struct AppTheme {
     static let background = Color(red: 0.97, green: 0.97, blue: 0.95)
@@ -617,9 +647,9 @@ struct InputArea: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
-                .padding(.bottom, viewModel.selectedAttachments.isEmpty ? 4 : 0)
+                .padding(.bottom, viewModel.shouldShowSelectedAttachmentTray ? 0 : 4)
             }
-            if !viewModel.selectedAttachments.isEmpty {
+            if viewModel.shouldShowSelectedAttachmentTray {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
                         ForEach(Array(viewModel.selectedAttachments.enumerated()), id: \.element.renderIdentity) { index, attachment in
@@ -638,10 +668,10 @@ struct InputArea: View {
                     .padding(.top, 15)
                     .padding(.bottom, 5)
                 }
-                if viewModel.selectedAttachments.contains(where: { $0.transferState == .failed }) && !viewModel.isLoading {
+                if viewModel.hasFailedAttachments && !viewModel.isLoading {
                     HStack {
                         Button(action: { withAnimation { viewModel.retryAttachments() } }) {
-                            Label("重试附件发送", systemImage: "arrow.clockwise")
+                            Label("重试附件上传", systemImage: "arrow.clockwise")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundColor(AppTheme.accent)
                         }
@@ -671,7 +701,7 @@ struct InputArea: View {
                         .foregroundColor(AppTheme.accent)
                         .padding(.bottom, 10)
                 }
-                PhotosPicker(selection: $selectedItems, matching: .images) {
+                PhotosPicker(selection: $selectedItems, matching: .any(of: [.images, .videos])) {
                     Image(systemName: "photo.on.rectangle")
                         .font(.system(size: 20))
                         .foregroundColor(AppTheme.accent)
@@ -680,9 +710,19 @@ struct InputArea: View {
                 .onChange(of: selectedItems) { oldValue, newValue in
                     Task {
                         for item in newValue {
-                            if let data = try? await item.loadTransferable(type: Data.self),
-                               let image = UIImage(data: data) {
-                                viewModel.addPickedImage(image)
+                            let supportedTypes = item.supportedContentTypes
+                            if supportedTypes.contains(where: { $0.conforms(to: .image) }) {
+                                if let data = try? await item.loadTransferable(type: Data.self),
+                                   let image = UIImage(data: data) {
+                                    viewModel.addPickedImage(image)
+                                }
+                                continue
+                            }
+
+                            if supportedTypes.contains(where: { $0.conforms(to: .movie) || $0.conforms(to: .video) }) {
+                                if let pickedFile = try? await item.loadTransferable(type: PickedMediaFile.self) {
+                                    viewModel.addPickedFile(from: pickedFile.url)
+                                }
                             }
                         }
                         selectedItems = []
@@ -699,10 +739,10 @@ struct InputArea: View {
                     Image(systemName: "arrow.up.circle.fill")
                         .resizable()
                         .frame(width: 32, height: 32)
-                        .foregroundColor((viewModel.inputText.isEmpty && viewModel.selectedAttachments.isEmpty) ? Color.gray.opacity(0.3) : AppTheme.accent)
+                        .foregroundColor(viewModel.canSendCurrentMessage ? AppTheme.accent : Color.gray.opacity(0.3))
                         .padding(.bottom, 4)
                 }
-                .disabled((viewModel.inputText.isEmpty && viewModel.selectedAttachments.isEmpty) || viewModel.isLoading)
+                .disabled(!viewModel.canSendCurrentMessage)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -725,7 +765,7 @@ struct SelectedAttachmentCard: View {
                         .frame(width: 60, height: 60)
                         .cornerRadius(10)
                         .clipped()
-                    AttachmentStatusBadge(state: attachment.transferState)
+                    AttachmentStatusBadge(state: attachment.transferState, progress: attachment.uploadProgress)
                         .padding(4)
                 }
             } else if attachment.fileKind == .audio {
@@ -740,7 +780,8 @@ struct SelectedAttachmentCard: View {
                     subtitle: attachment.fileKind.displayName,
                     systemImageName: attachment.fileKind.systemImageName,
                     compact: true,
-                    transferState: attachment.transferState
+                    transferState: attachment.transferState,
+                    uploadProgress: attachment.uploadProgress
                 )
                 .frame(width: 170)
             }
@@ -829,6 +870,10 @@ struct AudioAttachmentPreviewCard: View {
         switch attachment.transferState {
         case .idle:
             return nil
+        case .uploading:
+            return "上传中 \(Int((attachment.uploadProgress * 100).rounded()))%"
+        case .processing:
+            return attachment.transferState.displayText
         default:
             return attachment.transferState.displayText
         }
@@ -838,6 +883,8 @@ struct AudioAttachmentPreviewCard: View {
         switch attachment.transferState {
         case .uploading:
             return AppTheme.accent
+        case .processing:
+            return Color.orange
         case .uploaded:
             return .green
         case .failed:
@@ -861,6 +908,7 @@ struct AttachmentCard: View {
     let systemImageName: String
     var compact: Bool = false
     var transferState: AttachmentTransferState? = nil
+    var uploadProgress: Double = 0
 
     var body: some View {
         HStack(spacing: 12) {
@@ -885,7 +933,7 @@ struct AttachmentCard: View {
                     HStack(spacing: 4) {
                         Image(systemName: transferState.systemImageName)
                             .font(.system(size: 10, weight: .semibold))
-                        Text(transferState.displayText)
+                        Text(statusText(for: transferState))
                             .font(.system(size: 10, weight: .semibold))
                     }
                     .foregroundColor(statusColor(for: transferState))
@@ -907,22 +955,32 @@ struct AttachmentCard: View {
             return .secondary
         case .uploading:
             return AppTheme.accent
+        case .processing:
+            return Color.orange
         case .uploaded:
             return .green
         case .failed:
             return .red
         }
     }
+
+    private func statusText(for state: AttachmentTransferState) -> String {
+        if state == .uploading {
+            return "上传中 \(Int((uploadProgress * 100).rounded()))%"
+        }
+        return state.displayText
+    }
 }
 
 struct AttachmentStatusBadge: View {
     let state: AttachmentTransferState
+    var progress: Double = 0
 
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: state.systemImageName)
                 .font(.system(size: 9, weight: .bold))
-            Text(state.displayText)
+            Text(statusText)
                 .font(.system(size: 9, weight: .bold))
         }
         .padding(.horizontal, 6)
@@ -938,11 +996,20 @@ struct AttachmentStatusBadge: View {
             return .gray.opacity(0.8)
         case .uploading:
             return AppTheme.accent
+        case .processing:
+            return Color.orange
         case .uploaded:
             return .green
         case .failed:
             return .red
         }
+    }
+
+    private var statusText: String {
+        if state == .uploading {
+            return "\(Int((progress * 100).rounded()))%"
+        }
+        return state.displayText
     }
 }
 

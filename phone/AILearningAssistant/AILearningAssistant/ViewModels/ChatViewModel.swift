@@ -6,6 +6,9 @@ import UniformTypeIdentifiers
 
 @MainActor
 class ChatViewModel: ObservableObject {
+    private static let defaultMaxAttachmentSize = 20 * 1024 * 1024
+    private static let videoMaxAttachmentSize = 2 * 1024 * 1024 * 1024
+
     struct AlertState: Identifiable {
         let id = UUID()
         let title: String
@@ -75,9 +78,36 @@ class ChatViewModel: ObservableObject {
     private var activeSendID = UUID()
     private var sessionLoadTask: Task<Void, Never>?
     private var sendTask: Task<Void, Never>?
+    private var attachmentUploadTasks: [UUID: Task<Void, Never>] = [:]
     private var hasLoadedInitialData = false
     
     var currentSessionId: String? = nil
+
+    var hasPendingAttachmentUploads: Bool {
+        selectedAttachments.contains {
+            $0.transferState == .idle
+                || $0.transferState == .uploading
+                || $0.transferState == .processing
+        }
+    }
+
+    var hasFailedAttachments: Bool {
+        selectedAttachments.contains { $0.transferState == .failed }
+    }
+
+    var shouldShowSelectedAttachmentTray: Bool {
+        guard !selectedAttachments.isEmpty else { return false }
+        return !isSendingMessage || hasFailedAttachments
+    }
+
+    var canSendCurrentMessage: Bool {
+        let hasText = !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasReadyAttachments = selectedAttachments.contains { $0.uploadedPath != nil }
+        guard hasText || hasReadyAttachments else { return false }
+        guard !isLoading else { return false }
+        guard !hasPendingAttachmentUploads else { return false }
+        return !hasFailedAttachments
+    }
     
     init() {}
 
@@ -278,6 +308,7 @@ class ChatViewModel: ObservableObject {
         activeSendID = UUID()
         sessionLoadTask?.cancel()
         sendTask?.cancel()
+        cancelAllAttachmentUploads()
         self.messages = []
         self.currentSessionId = nil
         self.selectedSessionId = nil
@@ -294,6 +325,7 @@ class ChatViewModel: ObservableObject {
         activeSendID = UUID()
         sessionLoadTask?.cancel()
         sendTask?.cancel()
+        cancelAllAttachmentUploads()
         self.currentSessionId = session.id
         self.selectedSessionId = session.id
         self.messages = [] 
@@ -329,12 +361,24 @@ class ChatViewModel: ObservableObject {
         }
     }
 
-    private func updateAttachmentState(id: UUID, state: AttachmentTransferState, uploadedPath: String? = nil) {
+    private func updateAttachmentState(
+        id: UUID,
+        state: AttachmentTransferState,
+        uploadedPath: String? = nil,
+        uploadProgress: Double? = nil
+    ) {
         guard let index = selectedAttachments.firstIndex(where: { $0.id == id }) else { return }
         var updatedAttachments = selectedAttachments
         updatedAttachments[index].transferState = state
         if let uploadedPath {
             updatedAttachments[index].uploadedPath = uploadedPath
+        }
+        if let uploadProgress {
+            updatedAttachments[index].uploadProgress = uploadProgress
+        } else if state == .uploaded || state == .processing {
+            updatedAttachments[index].uploadProgress = 1
+        } else if state == .idle || state == .failed {
+            updatedAttachments[index].uploadProgress = 0
         }
         selectedAttachments = updatedAttachments
     }
@@ -344,8 +388,16 @@ class ChatViewModel: ObservableObject {
         for index in updatedAttachments.indices {
             updatedAttachments[index].transferState = .idle
             updatedAttachments[index].uploadedPath = nil
+            updatedAttachments[index].uploadProgress = 0
         }
         selectedAttachments = updatedAttachments
+    }
+
+    private func cancelAllAttachmentUploads() {
+        for task in attachmentUploadTasks.values {
+            task.cancel()
+        }
+        attachmentUploadTasks.removeAll()
     }
 
     func sendMessage() {
@@ -354,6 +406,7 @@ class ChatViewModel: ObservableObject {
 
         let trimmedInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedInput.isEmpty || !selectedAttachments.isEmpty else { return }
+        guard canSendCurrentMessage else { return }
 
         let textToSend = trimmedInput
         let attachmentsToSend = selectedAttachments
@@ -377,11 +430,29 @@ class ChatViewModel: ObservableObject {
             do {
                 var uploadedFilePaths: [String] = []
                 for attachment in attachmentsToSend {
+                    if let uploadedPath = attachment.uploadedPath {
+                        uploadedFilePaths.append(uploadedPath)
+                        self.updateAttachmentState(id: attachment.id, state: .processing, uploadedPath: uploadedPath)
+                        continue
+                    }
+
                     self.processingStage = .uploadingFile(attachment.displayName)
-                    self.updateAttachmentState(id: attachment.id, state: .uploading)
-                    let uploadResp = try await uploadAttachment(attachment)
+                    self.updateAttachmentState(id: attachment.id, state: .uploading, uploadProgress: 0)
+                    let uploadResp = try await uploadAttachment(
+                        attachment,
+                        onProgress: { progress in
+                            Task { @MainActor [weak self] in
+                                self?.updateAttachmentState(id: attachment.id, state: .uploading, uploadProgress: progress)
+                            }
+                        },
+                        onServerProcessing: {
+                            Task { @MainActor [weak self] in
+                                self?.updateAttachmentState(id: attachment.id, state: .processing, uploadProgress: 0.9)
+                            }
+                        }
+                    )
                     uploadedFilePaths.append(uploadResp.file_path)
-                    self.updateAttachmentState(id: attachment.id, state: .uploaded, uploadedPath: uploadResp.file_path)
+                    self.updateAttachmentState(id: attachment.id, state: .processing, uploadedPath: uploadResp.file_path)
                 }
 
                 guard !Task.isCancelled, sendID == self.activeSendID else { return }
@@ -461,8 +532,11 @@ class ChatViewModel: ObservableObject {
     
     func addPickedImage(_ image: UIImage) {
         guard let imageData = image.jpegData(compressionQuality: 0.8) else { return }
-
-        selectedAttachments.append(
+        guard imageData.count <= Self.defaultMaxAttachmentSize else {
+            activeAlert = AlertState(title: "图片太大了", message: "图片请控制在20MB以内再上传。")
+            return
+        }
+        queueAttachmentForUpload(
             LocalAttachment(
                 displayName: "image_\(selectedAttachments.count + 1).jpg",
                 fileKind: .image,
@@ -474,7 +548,9 @@ class ChatViewModel: ObservableObject {
     }
 
     func addPickedFile(from url: URL) {
-        let type = (try? url.resourceValues(forKeys: [.contentTypeKey]).contentType)
+        let resourceKeys: Set<URLResourceKey> = [.contentTypeKey, .fileSizeKey, .totalFileSizeKey]
+        let resourceValues = try? url.resourceValues(forKeys: resourceKeys)
+        let type = resourceValues?.contentType
             ?? UTType(filenameExtension: url.pathExtension)
             ?? .data
 
@@ -483,10 +559,21 @@ class ChatViewModel: ObservableObject {
             return
         }
 
-        selectedAttachments.append(
+        let fileKind = AttachmentTypeResolver.kind(for: type)
+        let fileSize = resourceValues?.totalFileSize ?? resourceValues?.fileSize ?? 0
+        let maxSize = maxAttachmentSize(for: fileKind)
+        if fileSize > 0, fileSize > maxSize {
+            activeAlert = AlertState(
+                title: "\(fileKind.displayName)太大了",
+                message: "\(fileKind.displayName)请控制在\(uploadLimitText(for: fileKind))以内再上传。"
+            )
+            return
+        }
+
+        queueAttachmentForUpload(
             LocalAttachment(
                 displayName: url.lastPathComponent,
-                fileKind: AttachmentTypeResolver.kind(for: type),
+                fileKind: fileKind,
                 mimeType: AttachmentTypeResolver.mimeType(for: type, fileExtension: url.pathExtension),
                 localURL: url
             )
@@ -494,25 +581,87 @@ class ChatViewModel: ObservableObject {
     }
 
     func addAttachment(_ attachment: LocalAttachment) {
-        selectedAttachments.append(attachment)
+        queueAttachmentForUpload(attachment)
     }
 
     func removeAttachment(at index: Int) {
+        let attachment = selectedAttachments[index]
+        attachmentUploadTasks[attachment.id]?.cancel()
+        attachmentUploadTasks[attachment.id] = nil
         selectedAttachments.remove(at: index)
     }
 
     func retryAttachments() {
         resetAttachmentStatesToIdle()
-        sendMessage()
+        for attachment in selectedAttachments where attachment.transferState == .idle {
+            startAttachmentUpload(for: attachment.id)
+        }
     }
 
-    private func uploadAttachment(_ attachment: LocalAttachment) async throws -> UploadResponse {
+    private func queueAttachmentForUpload(_ attachment: LocalAttachment) {
+        selectedAttachments.append(attachment)
+        startAttachmentUpload(for: attachment.id)
+    }
+
+    private func startAttachmentUpload(for id: UUID) {
+        guard let attachment = selectedAttachments.first(where: { $0.id == id }) else { return }
+        attachmentUploadTasks[id]?.cancel()
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await MainActor.run {
+                self.updateAttachmentState(id: id, state: .uploading, uploadProgress: 0)
+            }
+
+            do {
+                let response = try await self.uploadAttachment(
+                    attachment,
+                    onProgress: { progress in
+                        Task { @MainActor [weak self] in
+                            self?.updateAttachmentState(id: id, state: .uploading, uploadProgress: progress)
+                        }
+                    },
+                    onServerProcessing: {
+                        Task { @MainActor [weak self] in
+                            self?.updateAttachmentState(id: id, state: .processing, uploadProgress: 0.9)
+                        }
+                    }
+                )
+
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.updateAttachmentState(id: id, state: .uploaded, uploadedPath: response.file_path)
+                    self.attachmentUploadTasks[id] = nil
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    self.attachmentUploadTasks[id] = nil
+                }
+            } catch {
+                await MainActor.run {
+                    self.updateAttachmentState(id: id, state: .failed)
+                    self.attachmentUploadTasks[id] = nil
+                    self.presentError(error, fallback: "文件上传失败")
+                }
+            }
+        }
+
+        attachmentUploadTasks[id] = task
+    }
+
+    private func uploadAttachment(
+        _ attachment: LocalAttachment,
+        onProgress: @escaping @Sendable (Double) -> Void,
+        onServerProcessing: @escaping @Sendable () -> Void
+    ) async throws -> UploadResponse {
         do {
             if let data = attachment.data {
                 return try await NetworkManager.shared.uploadFile(
                     data: data,
                     fileName: attachment.displayName,
-                    mimeType: attachment.mimeType
+                    mimeType: attachment.mimeType,
+                    onProgress: onProgress,
+                    onServerProcessing: onServerProcessing
                 )
             }
 
@@ -520,28 +669,24 @@ class ChatViewModel: ObservableObject {
                 throw NetworkError.serverError(statusCode: -1, message: "找不到待上传的本地文件。")
             }
 
-            let fileData = try await loadFileData(from: localURL)
             return try await NetworkManager.shared.uploadFile(
-                data: fileData,
+                fileURL: localURL,
                 fileName: attachment.displayName,
-                mimeType: attachment.mimeType
+                mimeType: attachment.mimeType,
+                onProgress: onProgress,
+                onServerProcessing: onServerProcessing
             )
         } catch {
             throw contextualizedUploadError(error, fileName: attachment.displayName)
         }
     }
 
-    nonisolated private func loadFileData(from localURL: URL) async throws -> Data {
-        try await Task.detached(priority: .userInitiated) {
-            let hasAccess = localURL.startAccessingSecurityScopedResource()
-            defer {
-                if hasAccess {
-                    localURL.stopAccessingSecurityScopedResource()
-                }
-            }
+    private func maxAttachmentSize(for kind: AttachmentKind) -> Int {
+        kind == .video ? Self.videoMaxAttachmentSize : Self.defaultMaxAttachmentSize
+    }
 
-            return try Data(contentsOf: localURL)
-        }.value
+    private func uploadLimitText(for kind: AttachmentKind) -> String {
+        kind == .video ? "2GB" : "20MB"
     }
 
     private func contextualizedUploadError(_ error: Error, fileName: String) -> Error {
