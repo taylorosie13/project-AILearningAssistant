@@ -64,7 +64,7 @@ private final class UploadTaskDelegate: NSObject, URLSessionTaskDelegate, URLSes
 }
 
 enum AppConfiguration {
-    static let defaultBaseURL = "http://localhost:8000"
+    static let defaultBaseURL = "http://10.59.20.166:8000"
 
     static var apiBaseURL: String {
         let configuredURL = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String
@@ -490,5 +490,83 @@ final class NetworkManager: Sendable {
         let data = try await send(request)
         let response = try JSONDecoder().decode(MessageResponse.self, from: data)
         return response.message
+    }
+
+    // MARK: - 笔记 API
+    nonisolated func fetchNotes() async throws -> [Note] {
+        let url = try makeURL(path: "/notes")
+        let data = try await send(from: url)
+        return try JSONDecoder().decode([Note].self, from: data)
+    }
+
+    nonisolated func fetchNote(noteId: Int) async throws -> Note {
+        let url = try makeURL(path: "/notes/\(noteId)")
+        let data = try await send(from: url)
+        return try JSONDecoder().decode(Note.self, from: data)
+    }
+
+    nonisolated func createNote(_ note: NoteCreate) async throws -> NoteMutationResponse {
+        let url = try makeURL(path: "/notes")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(note)
+
+        let data = try await send(request)
+        return try JSONDecoder().decode(NoteMutationResponse.self, from: data)
+    }
+
+    nonisolated func updateNote(noteId: Int, note: NoteUpdate) async throws -> NoteMutationResponse {
+        let url = try makeURL(path: "/notes/\(noteId)")
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(note)
+
+        let data = try await send(request)
+        return try JSONDecoder().decode(NoteMutationResponse.self, from: data)
+    }
+
+    nonisolated func deleteNote(noteId: Int) async throws {
+        let url = try makeURL(path: "/notes/\(noteId)")
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.timeoutInterval = 20
+
+        _ = try await send(request)
+    }
+
+    nonisolated func generateNote(_ requestBody: NoteGenerateRequest) async throws -> NoteGenerationResponse {
+        let url = try makeURL(path: "/notes/generate")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60 * 10
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(requestBody)
+
+        let data = try await send(request, using: longRunningSession)
+        return try JSONDecoder().decode(NoteGenerationResponse.self, from: data)
+    }
+
+    nonisolated func extractKnowledgeCard(fromNoteId noteId: Int) async throws -> CardExtractionResponse {
+        let url = try makeURL(path: "/notes/\(noteId)/extract-card")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+
+        let data = try await send(request)
+        return try JSONDecoder().decode(CardExtractionResponse.self, from: data)
+    }
+
+    nonisolated func expandCardToNote(cardId: Int) async throws -> NoteGenerationResponse {
+        let url = try makeURL(path: "/cards/\(cardId)/expand-note")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+
+        let data = try await send(request)
+        return try JSONDecoder().decode(NoteGenerationResponse.self, from: data)
     }
 }

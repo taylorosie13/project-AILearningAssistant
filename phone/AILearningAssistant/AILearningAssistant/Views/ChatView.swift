@@ -45,6 +45,7 @@ struct AppTheme {
 struct ChatView: View {
     @AppStorage(LaunchPermissionViewModel.localNetworkApprovalKey) private var startupLocalNetworkApproved = false
     @StateObject private var viewModel = ChatViewModel()
+    @StateObject private var noteViewModel = NoteViewModel()
     @StateObject private var voiceCaptureStore = VoiceCaptureStore()
     @State private var selectedItems: [PhotosPickerItem] = []
     @State private var showCamera = false
@@ -70,7 +71,7 @@ struct ChatView: View {
                                         EmptyStateView()
                                     } else {
                                         ForEach(viewModel.messages) { message in
-                                            MessageBubble(message: message, viewModel: viewModel)
+                                            MessageBubble(message: message, viewModel: viewModel, noteViewModel: noteViewModel)
                                                 .transition(.asymmetric(
                                                     insertion: .move(edge: .bottom).combined(with: .opacity),
                                                     removal: .opacity
@@ -103,7 +104,7 @@ struct ChatView: View {
                         .opacity(showSidebar ? 0.3 : 1.0)
                     }
 
-                    if let alert = viewModel.activeAlert {
+                    if let alert = viewModel.activeAlert ?? noteViewModel.activeAlert {
                         VStack {
                             BannerView(
                                 title: alert.title,
@@ -111,7 +112,11 @@ struct ChatView: View {
                                 onClose: {
                                     bannerTask?.cancel()
                                     withAnimation {
-                                        viewModel.dismissAlert()
+                                        if viewModel.activeAlert != nil {
+                                            viewModel.dismissAlert()
+                                        } else {
+                                            noteViewModel.dismissAlert()
+                                        }
                                     }
                                 }
                             )
@@ -135,6 +140,7 @@ struct ChatView: View {
                     SidebarView(
                         showSidebar: $showSidebar,
                         viewModel: viewModel,
+                        noteViewModel: noteViewModel,
                         voiceCaptureStore: voiceCaptureStore,
                         screenWidth: screenWidth
                     )
@@ -156,12 +162,30 @@ struct ChatView: View {
                         }
                         
                         ToolbarItem(placement: .navigationBarTrailing) {
-                            Button(action: {
-                                withAnimation { viewModel.startNewChat() }
-                            }) {
-                                Image(systemName: "square.and.pencil")
-                                    .font(.system(size: 18, weight: .semibold))
-                                    .foregroundColor(AppTheme.accent)
+                            HStack(spacing: 14) {
+                                if let currentSessionId = viewModel.currentSessionId {
+                                    Button(action: {
+                                        let sessionTitle = viewModel.sessions.first(where: { $0.id == currentSessionId })?.preview
+                                        Task {
+                                            _ = await noteViewModel.generateNoteFromCurrentSession(
+                                                sessionId: currentSessionId,
+                                                sessionTitle: sessionTitle
+                                            )
+                                        }
+                                    }) {
+                                        Image(systemName: "book.closed")
+                                            .font(.system(size: 18, weight: .semibold))
+                                            .foregroundColor(AppTheme.accent)
+                                    }
+                                }
+
+                                Button(action: {
+                                    withAnimation { viewModel.startNewChat() }
+                                }) {
+                                    Image(systemName: "square.and.pencil")
+                                        .font(.system(size: 18, weight: .semibold))
+                                        .foregroundColor(AppTheme.accent)
+                                }
                             }
                         }
                     }
@@ -190,6 +214,7 @@ struct ChatView: View {
                     NavigationStack {
                         VoiceWorkspaceView(
                             viewModel: viewModel,
+                            noteViewModel: noteViewModel,
                             store: voiceCaptureStore,
                             showsDismissButton: true
                         )
@@ -207,6 +232,17 @@ struct ChatView: View {
                         }
                     }
                 }
+                .onChange(of: noteViewModel.activeAlert?.id) { _, newValue in
+                    bannerTask?.cancel()
+                    guard newValue != nil, viewModel.activeAlert == nil else { return }
+                    bannerTask = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        guard !Task.isCancelled else { return }
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                            noteViewModel.dismissAlert()
+                        }
+                    }
+                }
                 .onChange(of: cameraImage) { oldImage, newImage in
                     if let image = newImage {
                         viewModel.addPickedImage(image)
@@ -218,6 +254,10 @@ struct ChatView: View {
                     try? await Task.sleep(nanoseconds: 300_000_000)
                     guard !Task.isCancelled else { return }
                     viewModel.loadInitialDataIfNeeded()
+                    noteViewModel.loadInitialDataIfNeeded()
+                }
+                .navigationDestination(item: $noteViewModel.presentedNote) { note in
+                    NoteDetailView(note: note, noteViewModel: noteViewModel, chatViewModel: viewModel)
                 }
             }
             .preferredColorScheme(.light)
@@ -324,6 +364,7 @@ struct CardEditSheet: View {
 struct SidebarView: View {
     @Binding var showSidebar: Bool
     @ObservedObject var viewModel: ChatViewModel
+    @ObservedObject var noteViewModel: NoteViewModel
     @ObservedObject var voiceCaptureStore: VoiceCaptureStore
     let screenWidth: CGFloat
     
@@ -356,8 +397,30 @@ struct SidebarView: View {
                 // 滚动内容区
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
+                        NavigationLink(destination: NotesView(noteViewModel: noteViewModel, chatViewModel: viewModel)) {
+                            HStack {
+                                Image(systemName: "book.closed.fill")
+                                    .foregroundColor(AppTheme.accent)
+                                Text("笔记库")
+                                    .font(.system(size: 16, weight: .semibold))
+                                Spacer()
+                                Text("\(noteViewModel.notes.count)")
+                                    .font(.caption)
+                                    .foregroundColor(.gray)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundColor(.gray)
+                            }
+                            .padding()
+                            .background(Color.white.opacity(0.4))
+                            .cornerRadius(12)
+                        }
+                        .padding(.horizontal, 15)
+                        .padding(.bottom, 10)
+                        .buttonStyle(PlainButtonStyle())
+
                         // 知识卡片盒入口
-                        NavigationLink(destination: KnowledgeCardView(viewModel: viewModel)) {
+                        NavigationLink(destination: KnowledgeCardView(viewModel: viewModel, noteViewModel: noteViewModel)) {
                             HStack {
                                 Image(systemName: "archivebox.fill")
                                     .foregroundColor(AppTheme.accent)
@@ -379,6 +442,7 @@ struct SidebarView: View {
                         NavigationLink(
                             destination: VoiceWorkspaceView(
                                 viewModel: viewModel,
+                                noteViewModel: noteViewModel,
                                 store: voiceCaptureStore
                             )
                         ) {
@@ -499,6 +563,7 @@ struct SidebarView: View {
 struct MessageBubble: View {
     let message: ChatMessage
     @ObservedObject var viewModel: ChatViewModel
+    @ObservedObject var noteViewModel: NoteViewModel
     var isUser: Bool { message.role == "user" }
     
     var body: some View {
@@ -523,6 +588,11 @@ struct MessageBubble: View {
                                 .contextMenu {
                                     Button(action: { UIPasteboard.general.string = message.content }) {
                                         Label("复制文本", systemImage: "doc.on.doc")
+                                    }
+                                    Button(action: {
+                                        Task { _ = await noteViewModel.generateNote(from: message) }
+                                    }) {
+                                        Label("整理成笔记", systemImage: "book.closed")
                                     }
                                     Button(action: { viewModel.saveAsKnowledgeCard(message: message) }) {
                                         Label("收藏为知识卡片", systemImage: "archivebox")
@@ -563,6 +633,14 @@ struct MessageBubble: View {
                             
                             Button(action: { viewModel.saveAsKnowledgeCard(message: message) }) {
                                 Label("全量收藏", systemImage: "archivebox")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(AppTheme.accent.opacity(0.7))
+                            }
+
+                            Button(action: {
+                                Task { _ = await noteViewModel.generateNote(from: message) }
+                            }) {
+                                Label("整理成笔记", systemImage: "book.closed")
                                     .font(.system(size: 11, weight: .medium))
                                     .foregroundColor(AppTheme.accent.opacity(0.7))
                             }

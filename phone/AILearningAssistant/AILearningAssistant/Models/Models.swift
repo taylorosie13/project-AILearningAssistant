@@ -362,3 +362,93 @@ nonisolated struct KnowledgeCardUpdate: Codable {
     let category: String?
     let tags: [String]
 }
+
+// MARK: - 笔记相关模型
+nonisolated struct Note: Identifiable, Codable, Hashable {
+    let id: Int
+    let title: String
+    let content_markdown: String
+    let summary: String?
+    let category: String?
+    let tags: [String]
+    let source_type: String
+    let source_ref_id: String?
+    let source_title: String?
+    let created_at: String
+    let updated_at: String
+
+    var sourceDisplayName: String {
+        switch source_type {
+        case "session":
+            return "会话整理"
+        case "message":
+            return "消息整理"
+        case "document":
+            return "文档整理"
+        case "audio":
+            return "语音整理"
+        case "card":
+            return "卡片扩展"
+        default:
+            return "手动创建"
+        }
+    }
+
+    var sourceDescription: String {
+        let title = source_title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let title, !title.isEmpty {
+            return "\(sourceDisplayName) · \(title)"
+        }
+        if let ref = source_ref_id, !ref.isEmpty {
+            return "\(sourceDisplayName) · \(ref)"
+        }
+        return sourceDisplayName
+    }
+}
+
+nonisolated struct NoteCreate: Codable {
+    let title: String
+    let content_markdown: String
+    let summary: String?
+    let category: String?
+    let tags: [String]
+    let source_type: String
+    let source_ref_id: String?
+    let source_title: String?
+}
+
+nonisolated struct NoteUpdate: Codable {
+    let title: String
+    let content_markdown: String
+    let summary: String?
+    let category: String?
+    let tags: [String]
+}
+
+nonisolated struct NoteGenerateRequest: Codable {
+    let source_type: String
+    let session_id: String?
+    let source_text: String?
+    let file_paths: [String]?
+    let category: String?
+    let tags: [String]
+    let source_ref_id: String?
+    let source_title: String?
+    let title_hint: String?
+}
+
+nonisolated struct NoteMutationResponse: Codable {
+    let message: String
+    let note_id: Int
+}
+
+nonisolated struct NoteGenerationResponse: Codable {
+    let message: String
+    let note_id: Int
+    let note: Note
+}
+
+nonisolated struct CardExtractionResponse: Codable {
+    let message: String
+    let card_id: Int
+}

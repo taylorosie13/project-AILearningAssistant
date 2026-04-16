@@ -113,7 +113,10 @@ async def upload_file_with_retry(file_path: str) -> object:
     raise last_error
 
 
-async def generate_content_with_retry(contents: list[dict[str, Any]]) -> str:
+async def generate_content_with_retry(
+    contents: list[dict[str, Any]],
+    system_instruction: str | None = None,
+) -> str:
     current_client = ensure_client()
     last_error: Exception | None = None
 
@@ -122,7 +125,7 @@ async def generate_content_with_retry(contents: list[dict[str, Any]]) -> str:
             response = await current_client.aio.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=contents,
-                config={"system_instruction": SYSTEM_PROMPT},
+                config={"system_instruction": system_instruction or SYSTEM_PROMPT},
             )
             return response.text
         except Exception as error:

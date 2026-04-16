@@ -2,6 +2,7 @@ import SwiftUI
 
 struct KnowledgeCardView: View {
     @ObservedObject var viewModel: ChatViewModel
+    @ObservedObject var noteViewModel: NoteViewModel
     @Environment(\.dismiss) var dismiss
     @State private var searchText = ""
     @State private var collapsedCategories: Set<String> = []
@@ -88,6 +89,7 @@ struct KnowledgeCardView: View {
                                     count: group.cards.count,
                                     isCollapsed: collapsedCategories.contains(group.category),
                                     viewModel: viewModel,
+                                    noteViewModel: noteViewModel,
                                     cards: group.cards,
                                     onToggle: {
                                         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
@@ -163,6 +165,7 @@ struct CategorySection: View {
     let count: Int
     let isCollapsed: Bool
     @ObservedObject var viewModel: ChatViewModel
+    @ObservedObject var noteViewModel: NoteViewModel
     let cards: [KnowledgeCard]
     let onToggle: () -> Void
 
@@ -192,7 +195,7 @@ struct CategorySection: View {
 
             if !isCollapsed {
                 ForEach(cards) { card in
-                    CardRow(card: card, viewModel: viewModel)
+                    CardRow(card: card, viewModel: viewModel, noteViewModel: noteViewModel)
                 }
             }
         }
@@ -202,6 +205,7 @@ struct CategorySection: View {
 struct CardRow: View {
     let card: KnowledgeCard
     @ObservedObject var viewModel: ChatViewModel
+    @ObservedObject var noteViewModel: NoteViewModel
     @State private var isExpanded = false
     
     var body: some View {
@@ -259,6 +263,17 @@ struct CardRow: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(AppTheme.userBubble)
+                        .cornerRadius(20)
+                }
+                Button(action: {
+                    Task { _ = await noteViewModel.expandCardToNote(card: card) }
+                }) {
+                    Image(systemName: "book.closed")
+                        .font(.caption)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(AppTheme.accent)
                         .cornerRadius(20)
                 }
                 Button(action: { viewModel.deleteKnowledgeCard(card) }) {

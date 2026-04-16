@@ -8,6 +8,7 @@ from app.core.database import init_db
 from app.routers.cards import router as cards_router
 from app.routers.chat import router as chat_router
 from app.routers.maintenance import router as maintenance_router
+from app.routers.notes import router as notes_router
 from app.routers.sessions import router as sessions_router
 from app.services.file_service import run_temp_file_cleanup
 
@@ -35,5 +36,6 @@ def create_app() -> FastAPI:
     app.include_router(chat_router)
     app.include_router(sessions_router)
     app.include_router(cards_router)
+    app.include_router(notes_router)
     app.include_router(maintenance_router)
     return app

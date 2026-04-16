@@ -47,6 +47,24 @@ def init_db() -> None:
         )
 
         cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content_markdown TEXT NOT NULL,
+                summary TEXT,
+                category TEXT,
+                tags TEXT,
+                source_type TEXT NOT NULL DEFAULT 'manual',
+                source_ref_id TEXT,
+                source_title TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_messages_session_id_id ON messages(session_id, id)"
         )
         cursor.execute(
@@ -54,6 +72,15 @@ def init_db() -> None:
         )
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_knowledge_cards_created_at ON knowledge_cards(created_at DESC)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notes_updated_at ON notes(updated_at DESC)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notes_category ON notes(category)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notes_source_type_ref ON notes(source_type, source_ref_id)"
         )
         conn.commit()
 

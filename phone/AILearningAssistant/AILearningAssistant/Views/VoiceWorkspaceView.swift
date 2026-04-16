@@ -9,6 +9,7 @@ struct VoiceWorkspaceView: View {
     }
 
     @ObservedObject var viewModel: ChatViewModel
+    @ObservedObject var noteViewModel: NoteViewModel
     @ObservedObject var store: VoiceCaptureStore
     let showsDismissButton: Bool
     @StateObject private var voiceInputController = VoiceInputController()
@@ -23,8 +24,9 @@ struct VoiceWorkspaceView: View {
     @State private var localAlert: ChatViewModel.AlertState?
     @State private var bannerTask: Task<Void, Never>?
 
-    init(viewModel: ChatViewModel, store: VoiceCaptureStore, showsDismissButton: Bool = false) {
+    init(viewModel: ChatViewModel, noteViewModel: NoteViewModel, store: VoiceCaptureStore, showsDismissButton: Bool = false) {
         self.viewModel = viewModel
+        self.noteViewModel = noteViewModel
         self.store = store
         self.showsDismissButton = showsDismissButton
     }
@@ -111,6 +113,11 @@ struct VoiceWorkspaceView: View {
                 }
             }
         }
+        .onChange(of: noteViewModel.activeAlert?.id) { _, newValue in
+            guard newValue != nil, let alert = noteViewModel.activeAlert else { return }
+            localAlert = alert
+            noteViewModel.dismissAlert()
+        }
         .sheet(item: $editingCapture) { capture in
             NavigationStack {
                 SavedCaptureEditorSheet(
@@ -120,6 +127,9 @@ struct VoiceWorkspaceView: View {
                     onSave: { saveEditedCapture(capture) }
                 )
             }
+        }
+        .navigationDestination(item: $noteViewModel.presentedNote) { note in
+            NoteDetailView(note: note, noteViewModel: noteViewModel, chatViewModel: viewModel)
         }
     }
 
@@ -160,7 +170,10 @@ struct VoiceWorkspaceView: View {
                     ForEach(store.captures) { capture in
                         SavedVoiceCaptureRow(
                             capture: capture,
-                            onEdit: { beginEditing(capture) }
+                            onEdit: { beginEditing(capture) },
+                            onGenerateNote: {
+                                Task { _ = await noteViewModel.generateNote(from: capture) }
+                            }
                         )
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
@@ -416,6 +429,7 @@ struct VoiceWorkspaceView: View {
 struct SavedVoiceCaptureRow: View {
     let capture: SavedVoiceCapture
     let onEdit: () -> Void
+    let onGenerateNote: () -> Void
     @StateObject private var player = AudioPreviewPlayer()
 
     var body: some View {
@@ -455,6 +469,16 @@ struct SavedVoiceCaptureRow: View {
                 ),
                 player: player
             )
+
+            Button(action: onGenerateNote) {
+                Label("整理成笔记", systemImage: "book.closed")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(AppTheme.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
         }
         .padding(.vertical, 8)
         .onDisappear {
