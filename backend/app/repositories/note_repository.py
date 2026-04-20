@@ -1,4 +1,5 @@
 from typing import Any
+from uuid import uuid4
 
 from app.core.database import get_db_connection
 
@@ -6,7 +7,7 @@ from app.core.database import get_db_connection
 def fetch_notes() -> list[dict[str, Any]]:
     query = """
         SELECT
-            id,
+            note_id AS id,
             title,
             content_markdown,
             summary,
@@ -18,19 +19,19 @@ def fetch_notes() -> list[dict[str, Any]]:
             created_at,
             updated_at
         FROM notes
-        ORDER BY updated_at DESC, id DESC
+        ORDER BY updated_at DESC, notes.id DESC
     """
     with get_db_connection() as conn:
         rows = conn.execute(query).fetchall()
     return [dict(row) for row in rows]
 
 
-def fetch_note_by_id(note_id: int) -> dict[str, Any] | None:
+def fetch_note_by_id(note_id: str) -> dict[str, Any] | None:
     with get_db_connection() as conn:
         row = conn.execute(
             """
             SELECT
-                id,
+                note_id AS id,
                 title,
                 content_markdown,
                 summary,
@@ -42,7 +43,7 @@ def fetch_note_by_id(note_id: int) -> dict[str, Any] | None:
                 created_at,
                 updated_at
             FROM notes
-            WHERE id = ?
+            WHERE note_id = ?
             """,
             (note_id,),
         ).fetchone()
@@ -58,11 +59,13 @@ def create_note(
     source_type: str,
     source_ref_id: str | None,
     source_title: str | None,
-) -> int:
+) -> str:
+    public_note_id = _generate_note_public_id()
     with get_db_connection() as conn:
-        cursor = conn.execute(
+        conn.execute(
             """
             INSERT INTO notes (
+                note_id,
                 title,
                 content_markdown,
                 summary,
@@ -72,9 +75,10 @@ def create_note(
                 source_ref_id,
                 source_title
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                public_note_id,
                 title,
                 content_markdown,
                 summary,
@@ -86,11 +90,11 @@ def create_note(
             ),
         )
         conn.commit()
-        return int(cursor.lastrowid)
+        return public_note_id
 
 
 def update_note(
-    note_id: int,
+    note_id: str,
     title: str,
     content_markdown: str,
     summary: str | None,
@@ -108,7 +112,7 @@ def update_note(
                 category = ?,
                 tags = ?,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
+            WHERE note_id = ?
             """,
             (title, content_markdown, summary, category, tags, note_id),
         )
@@ -116,7 +120,11 @@ def update_note(
         return cursor.rowcount > 0
 
 
-def delete_note(note_id: int) -> None:
+def delete_note(note_id: str) -> None:
     with get_db_connection() as conn:
-        conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+        conn.execute("DELETE FROM notes WHERE note_id = ?", (note_id,))
         conn.commit()
+
+
+def _generate_note_public_id() -> str:
+    return f"note_{uuid4().hex}"

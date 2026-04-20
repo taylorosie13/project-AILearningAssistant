@@ -106,12 +106,13 @@ struct KnowledgeCardView: View {
         }
         .navigationTitle("知识卡片盒")
         .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom) {
+            Text("\(filteredCards.count) 张")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+                .padding(.vertical, 8)
+        }
         .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Text("\(filteredCards.count) 张")
-                    .font(.caption)
-                    .foregroundColor(.gray)
-            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button(action: {
                     Task { await viewModel.loadKnowledgeCards() }
@@ -207,6 +208,7 @@ struct CardRow: View {
     @ObservedObject var viewModel: ChatViewModel
     @ObservedObject var noteViewModel: NoteViewModel
     @State private var isExpanded = false
+    @State private var showingAskAISheet = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -256,6 +258,15 @@ struct CardRow: View {
             }
             
             HStack {
+                Button(action: { showingAskAISheet = true }) {
+                    Label("问AI", systemImage: "sparkles")
+                        .font(.caption)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(AppTheme.accent)
+                        .cornerRadius(20)
+                }
                 Button(action: { viewModel.prepareExistingCardForEditing(card) }) {
                     Image(systemName: "square.and.pencil")
                         .font(.caption)
@@ -302,6 +313,16 @@ struct CardRow: View {
         .background(Color.white)
         .cornerRadius(16)
         .shadow(color: AppTheme.shadow, radius: 4, x: 0, y: 2)
+        .sheet(isPresented: $showingAskAISheet) {
+            ContextQuestionSheet(
+                title: "卡片提问",
+                placeholder: "比如：这张卡片最值得记住的点是什么？可以怎么理解？",
+                chatViewModel: viewModel,
+                askAction: { question in
+                    try await viewModel.askAIAboutCard(card, question: question)
+                }
+            )
+        }
     }
 }
 

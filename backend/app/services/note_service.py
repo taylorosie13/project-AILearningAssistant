@@ -148,7 +148,7 @@ def get_notes() -> list[dict[str, object]]:
     return [_serialize_note_row(note) for note in fetch_notes()]
 
 
-def get_note(note_id: int) -> dict[str, object]:
+def get_note(note_id: str) -> dict[str, object]:
     note = fetch_note_by_id(note_id)
     if not note:
         raise HTTPException(status_code=404, detail="未找到这条笔记。")
@@ -175,7 +175,7 @@ def create_manual_note(note: NoteCreate) -> dict[str, object]:
     return {"message": "笔记创建成功", "note_id": note_id}
 
 
-def update_existing_note(note_id: int, note: NoteUpdate) -> dict[str, object]:
+def update_existing_note(note_id: str, note: NoteUpdate) -> dict[str, object]:
     updated = update_note(
         note_id=note_id,
         title=_clean_text(note.title),
@@ -189,7 +189,7 @@ def update_existing_note(note_id: int, note: NoteUpdate) -> dict[str, object]:
     return {"message": "笔记更新成功", "note_id": note_id}
 
 
-def remove_note(note_id: int) -> dict[str, str]:
+def remove_note(note_id: str) -> dict[str, str]:
     delete_note(note_id)
     return {"message": "笔记删除成功"}
 
@@ -247,7 +247,7 @@ async def generate_note_from_source(request: NoteGenerateRequest) -> dict[str, o
     }
 
 
-def extract_card_from_note(note_id: int) -> dict[str, object]:
+def extract_card_from_note(note_id: str) -> dict[str, object]:
     note = get_note(note_id)
     card_id = create_card(
         title=str(note["title"]),

@@ -4,12 +4,31 @@ import WebKit
 struct MarkdownView: View {
     let content: String
     @ObservedObject var viewModel: ChatViewModel
+    var maxDisplayHeight: CGFloat? = nil
     @State private var webViewHeight: CGFloat = 50 
 
     var body: some View {
+        let renderedHeight = min(webViewHeight, maxDisplayHeight ?? webViewHeight)
+        let isTruncated = (maxDisplayHeight ?? .greatestFiniteMagnitude) < webViewHeight
+
         WebView(content: content, dynamicHeight: $webViewHeight, viewModel: viewModel)
-            .frame(height: webViewHeight)
+            .frame(height: renderedHeight)
             .clipped()
+            .overlay(alignment: .bottom) {
+                if isTruncated {
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0),
+                            Color.white.opacity(0.88),
+                            Color.white
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 64)
+                    .allowsHitTesting(false)
+                }
+            }
     }
 }
 

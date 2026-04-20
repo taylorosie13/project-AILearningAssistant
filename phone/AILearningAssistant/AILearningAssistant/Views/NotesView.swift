@@ -175,13 +175,13 @@ struct NotesView: View {
         }
         .navigationTitle("笔记库")
         .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom) {
+            Text("\(filteredNotes.count) 篇")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+                .padding(.vertical, 8)
+        }
         .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Text("\(filteredNotes.count) 篇")
-                    .font(.caption)
-                    .foregroundColor(.gray)
-            }
-
             ToolbarItem(placement: .navigationBarTrailing) {
                 HStack(spacing: 12) {
                     Button {
@@ -313,29 +313,42 @@ private struct DraftInboxSection: View {
     let statuses: [NoteDraftStatus]
     let onContinue: (NoteDraftStatus) -> Void
     let onClear: (NoteDraftStatus) -> Void
+    @State private var isCollapsed = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("草稿箱")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                    .foregroundColor(AppTheme.accent)
-                Spacer()
-                Text("\(statuses.count) 条")
-                    .font(.caption)
-                    .foregroundColor(.gray)
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
+                    isCollapsed.toggle()
+                }
+            } label: {
+                HStack {
+                    Text("草稿箱")
+                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .foregroundColor(AppTheme.accent)
+                    Spacer()
+                    Text("\(statuses.count) 条")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                    Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.gray)
+                }
             }
+            .buttonStyle(.plain)
 
             Text("这里会暂存你还没正式保存的内容，新建笔记和修改笔记都会放进来。")
                 .font(.system(size: 13))
                 .foregroundColor(.secondary)
 
-            ForEach(statuses, id: \.draftKey) { status in
-                DraftInboxCard(
-                    status: status,
-                    onContinue: { onContinue(status) },
-                    onClear: { onClear(status) }
-                )
+            if !isCollapsed {
+                ForEach(statuses, id: \.draftKey) { status in
+                    DraftInboxCard(
+                        status: status,
+                        onContinue: { onContinue(status) },
+                        onClear: { onClear(status) }
+                    )
+                }
             }
         }
         .padding(18)

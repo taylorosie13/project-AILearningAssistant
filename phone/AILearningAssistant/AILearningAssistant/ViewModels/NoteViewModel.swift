@@ -30,7 +30,7 @@ final class NoteViewModel: ObservableObject {
         }
     }
 
-    func fetchLatestNote(noteId: Int) async -> Note? {
+    func fetchLatestNote(noteId: String) async -> Note? {
         do {
             let note = try await NetworkManager.shared.fetchNote(noteId: noteId)
             upsert(note)
@@ -74,7 +74,7 @@ final class NoteViewModel: ObservableObject {
     }
 
     func updateNote(
-        noteId: Int,
+        noteId: String,
         title: String,
         contentMarkdown: String,
         summary: String?,

@@ -282,6 +282,69 @@ class ChatViewModel: ObservableObject {
             .filter { !$0.isEmpty }
     }
 
+    func askAIAboutNote(_ note: Note, question: String) async throws -> String {
+        let prompt = buildContextQuestionPrompt(
+            sourceName: "笔记",
+            title: note.title,
+            summary: note.summary,
+            content: note.content_markdown,
+            question: question
+        )
+        let response = try await NetworkManager.shared.sendMessage(prompt: prompt, sessionId: nil, filePaths: nil)
+        return response.response
+    }
+
+    func askAIAboutCard(_ card: KnowledgeCard, question: String) async throws -> String {
+        let prompt = buildContextQuestionPrompt(
+            sourceName: "知识卡片",
+            title: card.title,
+            summary: card.category,
+            content: card.content,
+            question: question
+        )
+        let response = try await NetworkManager.shared.sendMessage(prompt: prompt, sessionId: nil, filePaths: nil)
+        return response.response
+    }
+
+    private func buildContextQuestionPrompt(
+        sourceName: String,
+        title: String,
+        summary: String?,
+        content: String,
+        question: String
+    ) -> String {
+        let cleanedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanedSummary = summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let cleanedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var sections = [
+            "请只基于我提供的\(sourceName)内容来回答问题。",
+            "如果内容里信息不够，请直接说明哪里不够，不要编造。",
+            "",
+            "## \(sourceName)标题",
+            title,
+        ]
+
+        if !cleanedSummary.isEmpty {
+            sections += [
+                "",
+                "## 补充信息",
+                cleanedSummary
+            ]
+        }
+
+        sections += [
+            "",
+            "## \(sourceName)内容",
+            cleanedContent,
+            "",
+            "## 用户问题",
+            cleanedQuestion
+        ]
+
+        return sections.joined(separator: "\n")
+    }
+
     func deleteKnowledgeCard(_ card: KnowledgeCard) {
         Task {
             do {

@@ -365,7 +365,7 @@ nonisolated struct KnowledgeCardUpdate: Codable {
 
 // MARK: - 笔记相关模型
 nonisolated struct Note: Identifiable, Codable, Hashable {
-    let id: Int
+    let id: String
     let title: String
     let content_markdown: String
     let summary: String?
@@ -404,6 +404,49 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
         }
         return sourceDisplayName
     }
+
+    var detailContentMarkdown: String {
+        var lines = content_markdown.components(separatedBy: .newlines)
+
+        func trimLeadingBlankLines() {
+            while let first = lines.first, first.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                lines.removeFirst()
+            }
+        }
+
+        trimLeadingBlankLines()
+
+        // 详情页顶部已经展示了标题，这里把 Markdown 开头重复的一级标题去掉。
+        if let first = lines.first, first.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("# ") {
+            lines.removeFirst()
+        }
+
+        trimLeadingBlankLines()
+
+        // 摘要卡片已经单独展示过，就不在正文里再显示一次。
+        if let summary, !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let first = lines.first,
+           first.trimmingCharacters(in: .whitespacesAndNewlines) == "## 摘要" {
+            lines.removeFirst()
+            while let first = lines.first {
+                let trimmed = first.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.hasPrefix("## ") {
+                    break
+                }
+                lines.removeFirst()
+            }
+        }
+
+        trimLeadingBlankLines()
+
+        // “正文”这个小标题已经由外层卡片承担了。
+        if let first = lines.first, first.trimmingCharacters(in: .whitespacesAndNewlines) == "## 正文" {
+            lines.removeFirst()
+        }
+
+        let cleaned = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? content_markdown : cleaned
+    }
 }
 
 nonisolated struct NoteCreate: Codable {
@@ -439,12 +482,12 @@ nonisolated struct NoteGenerateRequest: Codable {
 
 nonisolated struct NoteMutationResponse: Codable {
     let message: String
-    let note_id: Int
+    let note_id: String
 }
 
 nonisolated struct NoteGenerationResponse: Codable {
     let message: String
-    let note_id: Int
+    let note_id: String
     let note: Note
 }
 

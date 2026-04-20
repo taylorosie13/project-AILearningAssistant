@@ -163,22 +163,6 @@ struct ChatView: View {
                         
                         ToolbarItem(placement: .navigationBarTrailing) {
                             HStack(spacing: 14) {
-                                if let currentSessionId = viewModel.currentSessionId {
-                                    Button(action: {
-                                        let sessionTitle = viewModel.sessions.first(where: { $0.id == currentSessionId })?.preview
-                                        Task {
-                                            _ = await noteViewModel.generateNoteFromCurrentSession(
-                                                sessionId: currentSessionId,
-                                                sessionTitle: sessionTitle
-                                            )
-                                        }
-                                    }) {
-                                        Image(systemName: "book.closed")
-                                            .font(.system(size: 18, weight: .semibold))
-                                            .foregroundColor(AppTheme.accent)
-                                    }
-                                }
-
                                 Button(action: {
                                     withAnimation { viewModel.startNewChat() }
                                 }) {

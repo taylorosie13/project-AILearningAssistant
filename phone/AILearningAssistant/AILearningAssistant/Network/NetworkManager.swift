@@ -64,7 +64,7 @@ private final class UploadTaskDelegate: NSObject, URLSessionTaskDelegate, URLSes
 }
 
 enum AppConfiguration {
-    static let defaultBaseURL = "http://10.59.20.166:8000"
+    static let defaultBaseURL = "http://10.59.7.146:8000"
 
     static var apiBaseURL: String {
         let configuredURL = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String
@@ -499,7 +499,7 @@ final class NetworkManager: Sendable {
         return try JSONDecoder().decode([Note].self, from: data)
     }
 
-    nonisolated func fetchNote(noteId: Int) async throws -> Note {
+    nonisolated func fetchNote(noteId: String) async throws -> Note {
         let url = try makeURL(path: "/notes/\(noteId)")
         let data = try await send(from: url)
         return try JSONDecoder().decode(Note.self, from: data)
@@ -517,7 +517,7 @@ final class NetworkManager: Sendable {
         return try JSONDecoder().decode(NoteMutationResponse.self, from: data)
     }
 
-    nonisolated func updateNote(noteId: Int, note: NoteUpdate) async throws -> NoteMutationResponse {
+    nonisolated func updateNote(noteId: String, note: NoteUpdate) async throws -> NoteMutationResponse {
         let url = try makeURL(path: "/notes/\(noteId)")
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
@@ -529,7 +529,7 @@ final class NetworkManager: Sendable {
         return try JSONDecoder().decode(NoteMutationResponse.self, from: data)
     }
 
-    nonisolated func deleteNote(noteId: Int) async throws {
+    nonisolated func deleteNote(noteId: String) async throws {
         let url = try makeURL(path: "/notes/\(noteId)")
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
@@ -550,7 +550,7 @@ final class NetworkManager: Sendable {
         return try JSONDecoder().decode(NoteGenerationResponse.self, from: data)
     }
 
-    nonisolated func extractKnowledgeCard(fromNoteId noteId: Int) async throws -> CardExtractionResponse {
+    nonisolated func extractKnowledgeCard(fromNoteId noteId: String) async throws -> CardExtractionResponse {
         let url = try makeURL(path: "/notes/\(noteId)/extract-card")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

@@ -47,7 +47,7 @@ private struct PersistedNoteDraft: Codable {
 
 struct NoteDraftStatus: Hashable {
     let draftKey: String
-    let noteID: Int?
+    let noteID: String?
     let title: String
     let savedAt: Date
     let preview: String
@@ -535,9 +535,9 @@ struct NoteEditView: View {
     private static func makeDraftStatus(
         forKey key: String,
         persisted: PersistedNoteDraft,
-        notesByID: [Int: Note]
+        notesByID: [String: Note]
     ) -> NoteDraftStatus? {
-        let noteID: Int?
+        let noteID: String?
         let sourceLabel: String
 
         if key == "note-editor-draft-new" {
@@ -545,7 +545,8 @@ struct NoteEditView: View {
             sourceLabel = "新建笔记草稿"
         } else {
             let suffix = key.replacingOccurrences(of: "note-editor-draft-", with: "")
-            guard let parsedID = Int(suffix) else { return nil }
+            guard !suffix.isEmpty else { return nil }
+            let parsedID = suffix
             guard notesByID[parsedID] != nil else { return nil }
             noteID = parsedID
             sourceLabel = "笔记修改草稿"

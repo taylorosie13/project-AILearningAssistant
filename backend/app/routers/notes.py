@@ -21,7 +21,7 @@ async def get_notes_endpoint():
 
 
 @router.get("/notes/{note_id}")
-async def get_note_endpoint(note_id: int):
+async def get_note_endpoint(note_id: str):
     return get_note(note_id)
 
 
@@ -31,12 +31,12 @@ async def create_note_endpoint(note: NoteCreate):
 
 
 @router.put("/notes/{note_id}")
-async def update_note_endpoint(note_id: int, note: NoteUpdate):
+async def update_note_endpoint(note_id: str, note: NoteUpdate):
     return update_existing_note(note_id, note)
 
 
 @router.delete("/notes/{note_id}")
-async def delete_note_endpoint(note_id: int):
+async def delete_note_endpoint(note_id: str):
     return remove_note(note_id)
 
 
@@ -46,7 +46,7 @@ async def generate_note_endpoint(request: NoteGenerateRequest):
 
 
 @router.post("/notes/{note_id}/extract-card")
-async def extract_card_from_note_endpoint(note_id: int):
+async def extract_card_from_note_endpoint(note_id: str):
     return extract_card_from_note(note_id)
 
 
