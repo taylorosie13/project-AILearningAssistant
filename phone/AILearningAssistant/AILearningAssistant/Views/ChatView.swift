@@ -47,7 +47,6 @@ struct ChatView: View {
     @StateObject private var viewModel = ChatViewModel()
     @StateObject private var noteViewModel = NoteViewModel()
     @StateObject private var voiceCaptureStore = VoiceCaptureStore()
-    @State private var selectedItems: [PhotosPickerItem] = []
     @State private var showCamera = false
     @State private var showFileImporter = false
     @State private var showVoiceWorkspace = false
@@ -63,45 +62,45 @@ struct ChatView: View {
                 ZStack {
                     AppTheme.background.ignoresSafeArea()
                     
-                    VStack(spacing: 0) {
+                    ScrollViewReader { proxy in
                         ScrollView {
-                            ScrollViewReader { proxy in
-                                LazyVStack(spacing: 24) {
-                                    if viewModel.messages.isEmpty {
-                                        EmptyStateView()
-                                    } else {
-                                        ForEach(viewModel.messages) { message in
-                                            MessageBubble(message: message, viewModel: viewModel, noteViewModel: noteViewModel)
-                                                .transition(.asymmetric(
-                                                    insertion: .move(edge: .bottom).combined(with: .opacity),
-                                                    removal: .opacity
-                                                ))
-                                        }
-                                    }
-                                    
-                                    if viewModel.isLoading {
-                                        HStack {
-                                            LoadingIndicator(statusText: viewModel.processingStage.statusText)
-                                                .padding(.leading, 20)
-                                            Spacer()
-                                        }
+                            LazyVStack(spacing: 24) {
+                                if viewModel.messages.isEmpty {
+                                    EmptyStateView()
+                                } else {
+                                    ForEach(viewModel.messages) { message in
+                                        MessageBubble(message: message, viewModel: viewModel, noteViewModel: noteViewModel)
+                                            .transition(.asymmetric(
+                                                insertion: .move(edge: .bottom).combined(with: .opacity),
+                                                removal: .opacity
+                                            ))
                                     }
                                 }
-                                .padding(.vertical, 20)
-                                .onChange(of: viewModel.messages.count) { oldValue, newValue in
-                                    withAnimation { scrollToBottom(proxy: proxy) }
+
+                                if viewModel.isLoading {
+                                    HStack {
+                                        LoadingIndicator(statusText: viewModel.processingStage.statusText)
+                                            .padding(.leading, 20)
+                                        Spacer()
+                                    }
                                 }
                             }
+                            .padding(.vertical, 20)
+                            .onChange(of: viewModel.messages.count) { oldValue, newValue in
+                                withAnimation { scrollToBottom(proxy: proxy) }
+                            }
                         }
-                        
+                        .scrollDismissesKeyboard(.interactively)
+                    }
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
                         InputArea(
                             viewModel: viewModel,
-                            selectedItems: $selectedItems,
                             showCamera: $showCamera,
                             showFileImporter: $showFileImporter,
                             showVoiceWorkspace: $showVoiceWorkspace
                         )
                         .opacity(showSidebar ? 0.3 : 1.0)
+                        .background(Color.white)
                     }
 
                     if let alert = viewModel.activeAlert ?? noteViewModel.activeAlert {
@@ -358,9 +357,11 @@ struct SidebarView: View {
                 // 顶部 Header
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Image(systemName: "graduationcap.circle.fill")
-                            .font(.system(size: 32))
-                            .foregroundColor(AppTheme.accent)
+                        Image("BrandLogo")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 32, height: 32)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         Spacer()
                         Button(action: { withAnimation { showSidebar = false } }) {
                             Image(systemName: "xmark")
@@ -520,7 +521,7 @@ struct SidebarView: View {
                 HStack {
                     Image(systemName: "person.crop.circle.fill")
                         .foregroundColor(AppTheme.accent)
-                    Text("Taylor 的助手")
+                    Text("知芽")
                         .font(.footnote)
                     Spacer()
                     Text("Beta v0.2")
@@ -604,8 +605,17 @@ struct MessageBubble: View {
                     }
                     
                     if !message.content.isEmpty {
-                        MarkdownView(content: message.content, viewModel: viewModel)
-                            .padding(.top, 4)
+                        if message.isStreaming {
+                            Text(message.content)
+                                .font(.system(size: 16, weight: .regular, design: .rounded))
+                                .foregroundColor(Color(white: 0.15))
+                                .lineSpacing(5)
+                                .textSelection(.enabled)
+                                .padding(.top, 4)
+                        } else {
+                            MarkdownView(content: message.content, viewModel: viewModel)
+                                .padding(.top, 4)
+                        }
                         
                         // 新增：AI 解析底部的功能操作栏
                         HStack(spacing: 16) {
@@ -687,13 +697,21 @@ struct MessageAttachmentList: View {
 // MARK: - 底部输入区域
 struct InputArea: View {
     @ObservedObject var viewModel: ChatViewModel
-    @Binding var selectedItems: [PhotosPickerItem]
     @Binding var showCamera: Bool
     @Binding var showFileImporter: Bool
     @Binding var showVoiceWorkspace: Bool
+    @FocusState private var isTextFieldFocused: Bool
     
     var body: some View {
-        let topStatusText = viewModel.isLoading ? viewModel.processingStage.statusText : nil
+        let topStatusText: String? = {
+            guard viewModel.isLoading else { return nil }
+            switch viewModel.processingStage {
+            case .uploadingFile, .preparingDocuments:
+                return viewModel.processingStage.statusText
+            case .idle, .requestingModel:
+                return nil
+            }
+        }()
 
         VStack(spacing: 0) {
             Divider().opacity(0.5)
@@ -744,52 +762,35 @@ struct InputArea: View {
                 }
             }
             HStack(alignment: .bottom, spacing: 12) {
-                Button(action: { showCamera = true }) {
+                Button(action: {
+                    isTextFieldFocused = false
+                    showCamera = true
+                }) {
                     Image(systemName: "camera.fill")
                         .font(.system(size: 20))
                         .foregroundColor(AppTheme.accent)
                         .padding(.bottom, 10)
                 }
-                Button(action: { showVoiceWorkspace = true }) {
+                Button(action: {
+                    isTextFieldFocused = false
+                    showVoiceWorkspace = true
+                }) {
                     Image(systemName: "waveform.badge.mic")
                         .font(.system(size: 20))
                         .foregroundColor(AppTheme.accent)
                         .padding(.bottom, 10)
                 }
                 .disabled(viewModel.isLoading)
-                Button(action: { showFileImporter = true }) {
+                Button(action: {
+                    isTextFieldFocused = false
+                    showFileImporter = true
+                }) {
                     Image(systemName: "paperclip")
                         .font(.system(size: 20))
                         .foregroundColor(AppTheme.accent)
                         .padding(.bottom, 10)
                 }
-                PhotosPicker(selection: $selectedItems, matching: .any(of: [.images, .videos])) {
-                    Image(systemName: "photo.on.rectangle")
-                        .font(.system(size: 20))
-                        .foregroundColor(AppTheme.accent)
-                        .padding(.bottom, 10)
-                }
-                .onChange(of: selectedItems) { oldValue, newValue in
-                    Task {
-                        for item in newValue {
-                            let supportedTypes = item.supportedContentTypes
-                            if supportedTypes.contains(where: { $0.conforms(to: .image) }) {
-                                if let data = try? await item.loadTransferable(type: Data.self),
-                                   let image = UIImage(data: data) {
-                                    viewModel.addPickedImage(image)
-                                }
-                                continue
-                            }
-
-                            if supportedTypes.contains(where: { $0.conforms(to: .movie) || $0.conforms(to: .video) }) {
-                                if let pickedFile = try? await item.loadTransferable(type: PickedMediaFile.self) {
-                                    viewModel.addPickedFile(from: pickedFile.url)
-                                }
-                            }
-                        }
-                        selectedItems = []
-                    }
-                }
+                LearningModeMenuButton(selectedMode: $viewModel.selectedLearningMode, disabled: viewModel.isLoading)
                 TextField("问点什么...", text: $viewModel.inputText, axis: .vertical)
                     .lineLimit(1...5)
                     .padding(.horizontal, 14)
@@ -797,7 +798,11 @@ struct InputArea: View {
                     .background(Color.gray.opacity(0.06))
                     .cornerRadius(18)
                     .font(.system(size: 16))
-                Button(action: { withAnimation { viewModel.sendMessage() } }) {
+                    .focused($isTextFieldFocused)
+                Button(action: {
+                    isTextFieldFocused = false
+                    withAnimation { viewModel.sendMessage() }
+                }) {
                     Image(systemName: "arrow.up.circle.fill")
                         .resizable()
                         .frame(width: 32, height: 32)
@@ -810,6 +815,165 @@ struct InputArea: View {
             .padding(.vertical, 12)
             .background(Color.white)
         }
+    }
+}
+
+struct LearningModeMenuButton: View {
+    @Binding var selectedMode: LearningMode
+    let disabled: Bool
+    @State private var showModeDialog = false
+
+    var body: some View {
+        Button(action: {
+            showModeDialog = true
+        }) {
+            ZStack {
+                selectedMode.buttonShape
+                    .fill(selectedMode.buttonBackground)
+
+                Image(systemName: selectedMode.systemImageName)
+                    .font(.system(size: selectedMode == .normal ? 18 : 17, weight: .bold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundColor(selectedMode.buttonForegroundColor)
+            }
+            .frame(
+                width: LearningModeMenuButton.buttonFrameSize.width,
+                height: LearningModeMenuButton.buttonFrameSize.height
+            )
+            .overlay(
+                selectedMode.buttonShape
+                    .stroke(selectedMode.buttonStrokeColor, lineWidth: 1)
+            )
+            .contentShape(selectedMode.buttonShape)
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .accessibilityLabel("聊天模式：\(selectedMode.title)")
+        .accessibilityHint("点按后切换聊天模式")
+        .transaction { transaction in
+            transaction.animation = nil
+        }
+        .sheet(isPresented: $showModeDialog) {
+            LearningModeSheet(selectedMode: $selectedMode)
+        }
+    }
+
+    static let buttonFrameSize = CGSize(width: 42, height: 36)
+}
+
+private struct LearningModeSheet: View {
+    @Binding var selectedMode: LearningMode
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 10) {
+                ForEach(LearningMode.allCases) { mode in
+                    Button(action: {
+                        selectedMode = mode
+                        dismiss()
+                    }) {
+                        HStack(spacing: 12) {
+                            Image(systemName: mode.systemImageName)
+                                .font(.system(size: 18, weight: .semibold))
+                                .frame(width: 24)
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(mode.title)
+                                    .font(.system(size: 16, weight: .semibold))
+                                Text(mode.subtitle)
+                                    .font(.system(size: 12))
+                            }
+
+                            Spacer()
+
+                            if selectedMode == mode {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 18, weight: .bold))
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .foregroundStyle(selectedMode == mode ? mode.sheetHighlightColor : Color.primary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(selectedMode == mode ? mode.sheetRowBackground : Color.clear)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
+            .padding(.bottom, 24)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .navigationTitle("选择聊天模式")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.height(210)])
+        .presentationDragIndicator(.visible)
+    }
+}
+
+private extension LearningMode {
+    var buttonForegroundColor: Color {
+        switch self {
+        case .normal:
+            return AppTheme.accent
+        case .feynman:
+            return Color(red: 0.46, green: 0.22, blue: 0.10)
+        }
+    }
+
+    var buttonStrokeColor: Color {
+        switch self {
+        case .normal:
+            return AppTheme.accent.opacity(0.16)
+        case .feynman:
+            return Color(red: 0.67, green: 0.44, blue: 0.30).opacity(0.28)
+        }
+    }
+
+    var buttonBackground: AnyShapeStyle {
+        switch self {
+        case .normal:
+            return AnyShapeStyle(Color.clear)
+        case .feynman:
+            return AnyShapeStyle(
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.98, green: 0.92, blue: 0.84),
+                        Color(red: 0.95, green: 0.87, blue: 0.77)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+        }
+    }
+
+    var sheetHighlightColor: Color {
+        switch self {
+        case .normal:
+            return AppTheme.accent
+        case .feynman:
+            return Color(red: 0.55, green: 0.29, blue: 0.12)
+        }
+    }
+
+    var sheetRowBackground: Color {
+        switch self {
+        case .normal:
+            return Color(red: 0.94, green: 0.97, blue: 0.94)
+        case .feynman:
+            return Color(red: 0.99, green: 0.94, blue: 0.87)
+        }
+    }
+
+    var buttonShape: AnyShape {
+        AnyShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
     }
 }
 
@@ -1082,11 +1246,15 @@ struct EmptyStateView: View {
             Spacer(minLength: 80)
             ZStack {
                 Circle().fill(AppTheme.accent.opacity(0.05)).frame(width: 120, height: 120)
-                Image(systemName: "graduationcap.fill").font(.system(size: 50)).foregroundColor(AppTheme.accent.opacity(0.4))
+                Image("BrandLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 68, height: 68)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
             VStack(spacing: 8) {
-                Text("您的私人学伴").font(.system(.title3, design: .rounded).bold()).foregroundColor(AppTheme.accent)
-                Text("蒽蒽快来学习吧诡秘").font(.subheadline).foregroundColor(.gray)
+                Text("知芽，陪你把知识学明白").font(.system(.title3, design: .rounded).bold()).foregroundColor(AppTheme.accent)
+                Text("拍题、语音、笔记、卡片，都能接着学。").font(.subheadline).foregroundColor(.gray)
             }
             Spacer()
         }

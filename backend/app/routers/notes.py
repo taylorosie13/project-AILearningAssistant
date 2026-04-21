@@ -51,5 +51,5 @@ async def extract_card_from_note_endpoint(note_id: str):
 
 
 @router.post("/cards/{card_id}/expand-note")
-async def expand_card_to_note_endpoint(card_id: int):
+async def expand_card_to_note_endpoint(card_id: str):
     return expand_card_to_note(card_id)

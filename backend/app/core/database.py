@@ -37,6 +37,7 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS knowledge_cards (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                card_id TEXT UNIQUE,
                 title TEXT,
                 content TEXT,
                 category TEXT,
@@ -82,6 +83,22 @@ def init_db() -> None:
                 (_generate_note_public_id(), row["id"]),
             )
 
+        card_columns = {
+            row["name"]
+            for row in cursor.execute("PRAGMA table_info(knowledge_cards)").fetchall()
+        }
+        if "card_id" not in card_columns:
+            cursor.execute("ALTER TABLE knowledge_cards ADD COLUMN card_id TEXT")
+
+        existing_card_rows = cursor.execute(
+            "SELECT id FROM knowledge_cards WHERE card_id IS NULL OR TRIM(card_id) = ''"
+        ).fetchall()
+        for row in existing_card_rows:
+            cursor.execute(
+                "UPDATE knowledge_cards SET card_id = ? WHERE id = ?",
+                (_generate_card_public_id(), row["id"]),
+            )
+
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_messages_session_id_id ON messages(session_id, id)"
         )
@@ -90,6 +107,9 @@ def init_db() -> None:
         )
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_knowledge_cards_created_at ON knowledge_cards(created_at DESC)"
+        )
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_cards_card_id ON knowledge_cards(card_id)"
         )
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_notes_updated_at ON notes(updated_at DESC)"
@@ -118,6 +138,10 @@ def _apply_pragmas(conn: sqlite3.Connection) -> None:
 
 def _generate_note_public_id() -> str:
     return f"note_{uuid4().hex}"
+
+
+def _generate_card_public_id() -> str:
+    return f"card_{uuid4().hex}"
 
 
 @contextmanager

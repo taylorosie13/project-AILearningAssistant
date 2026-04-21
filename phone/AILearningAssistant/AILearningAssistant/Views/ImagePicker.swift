@@ -1,5 +1,7 @@
 import AVFoundation
 import Combine
+import Photos
+import PhotosUI
 import SwiftUI
 import UIKit
 
@@ -64,7 +66,9 @@ private struct CameraCaptureView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var camera = CameraSessionController()
+    @StateObject private var latestPhotoStore = LatestPhotoThumbnailStore()
     @State private var previewImage: UIImage?
+    @State private var showPhotoLibraryPicker = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -148,8 +152,12 @@ private struct CameraCaptureView: View {
                             }
 
                             HStack {
-                                Color.clear
-                                    .frame(width: 48, height: 48)
+                                Button(action: {
+                                    showPhotoLibraryPicker = true
+                                }) {
+                                    latestPhotoButton
+                                }
+                                .buttonStyle(.plain)
 
                                 Spacer()
 
@@ -184,6 +192,7 @@ private struct CameraCaptureView: View {
         }
         .onAppear {
             camera.start()
+            latestPhotoStore.refresh()
         }
         .onDisappear {
             camera.stop()
@@ -205,6 +214,13 @@ private struct CameraCaptureView: View {
             previewImage = capturedImage
             camera.stop()
         }
+        .sheet(isPresented: $showPhotoLibraryPicker) {
+            PhotoLibraryPicker { selectedImage in
+                image = selectedImage
+                latestPhotoStore.refresh()
+                dismiss()
+            }
+        }
     }
 
     private func overlayIconButton(systemName: String, action: @escaping () -> Void) -> some View {
@@ -217,6 +233,137 @@ private struct CameraCaptureView: View {
                 .clipShape(Circle())
         }
         .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var latestPhotoButton: some View {
+        ZStack {
+            if let thumbnail = latestPhotoStore.thumbnail {
+                Image(uiImage: thumbnail)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 48, height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            } else {
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(Color.white.opacity(0.14))
+                    .frame(width: 48, height: 48)
+                    .overlay(
+                        Image(systemName: "photo.on.rectangle")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                    )
+            }
+
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color.white.opacity(0.28), lineWidth: 1)
+                .frame(width: 48, height: 48)
+        }
+        .shadow(color: .black.opacity(0.16), radius: 10, x: 0, y: 4)
+    }
+}
+
+private struct PhotoLibraryPicker: UIViewControllerRepresentable {
+    let onImagePicked: (UIImage) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var configuration = PHPickerConfiguration(photoLibrary: .shared())
+        configuration.filter = .images
+        configuration.selectionLimit = 1
+        configuration.preferredAssetRepresentationMode = .current
+
+        let picker = PHPickerViewController(configuration: configuration)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        private let parent: PhotoLibraryPicker
+
+        init(_ parent: PhotoLibraryPicker) {
+            self.parent = parent
+        }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            guard let provider = results.first?.itemProvider else {
+                parent.dismiss()
+                return
+            }
+
+            if provider.canLoadObject(ofClass: UIImage.self) {
+                provider.loadObject(ofClass: UIImage.self) { object, _ in
+                    DispatchQueue.main.async {
+                        if let image = object as? UIImage {
+                            self.parent.onImagePicked(image)
+                        } else {
+                            self.parent.dismiss()
+                        }
+                    }
+                }
+            } else {
+                parent.dismiss()
+            }
+        }
+    }
+}
+
+private final class LatestPhotoThumbnailStore: ObservableObject {
+    @Published var thumbnail: UIImage?
+    private let imageManager = PHCachingImageManager()
+
+    func refresh() {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        switch status {
+        case .authorized, .limited:
+            loadLatestThumbnail()
+        case .notDetermined:
+            PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] newStatus in
+                guard newStatus == .authorized || newStatus == .limited else { return }
+                self?.loadLatestThumbnail()
+            }
+        default:
+            DispatchQueue.main.async { [weak self] in
+                self?.thumbnail = nil
+            }
+        }
+    }
+
+    private func loadLatestThumbnail() {
+        let fetchOptions = PHFetchOptions()
+        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        fetchOptions.fetchLimit = 1
+
+        let assets = PHAsset.fetchAssets(with: .image, options: fetchOptions)
+        guard let asset = assets.firstObject else {
+            DispatchQueue.main.async { [weak self] in
+                self?.thumbnail = nil
+            }
+            return
+        }
+
+        let targetSize = CGSize(width: 120, height: 120)
+        let requestOptions = PHImageRequestOptions()
+        requestOptions.deliveryMode = .opportunistic
+        requestOptions.resizeMode = .fast
+        requestOptions.isSynchronous = false
+
+        imageManager.requestImage(
+            for: asset,
+            targetSize: targetSize,
+            contentMode: .aspectFill,
+            options: requestOptions
+        ) { [weak self] image, _ in
+            DispatchQueue.main.async {
+                self?.thumbnail = image
+            }
+        }
     }
 }
 

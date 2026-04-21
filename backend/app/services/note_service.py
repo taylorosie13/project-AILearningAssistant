@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException
 
-from app.repositories.card_repository import create_card, fetch_cards
+from app.repositories.card_repository import create_card, fetch_card_by_id
 from app.repositories.note_repository import (
     create_note,
     delete_note,
@@ -259,8 +259,8 @@ def extract_card_from_note(note_id: str) -> dict[str, object]:
     return {"message": "已从笔记提炼出知识卡片", "card_id": card_id}
 
 
-def expand_card_to_note(card_id: int) -> dict[str, object]:
-    card = next((item for item in fetch_cards() if int(item["id"]) == card_id), None)
+def expand_card_to_note(card_id: str) -> dict[str, object]:
+    card = fetch_card_by_id(card_id)
     if not card:
         raise HTTPException(status_code=404, detail="没有找到要扩展的知识卡片。")
 
@@ -272,7 +272,7 @@ def expand_card_to_note(card_id: int) -> dict[str, object]:
         category=_normalize_category(card.get("category") if isinstance(card.get("category"), str) else None),
         tags=serialize_tags(parsed_tags),
         source_type="card",
-        source_ref_id=str(card_id),
+        source_ref_id=card_id,
         source_title=_clean_text(str(card.get("title") or "")) or None,
     )
     return {"message": "卡片已扩展成笔记", "note_id": note_id, "note": get_note(note_id)}

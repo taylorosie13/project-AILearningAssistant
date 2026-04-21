@@ -26,6 +26,7 @@ from app.core.config import (
 )
 from app.repositories.session_repository import collect_referenced_upload_path_strings
 from app.services.gemini_service import (
+    get_gemini_file_name,
     is_network_transport_error,
     upload_file_with_retry,
 )
@@ -279,6 +280,7 @@ async def prepare_file_for_model(
     except HTTPException:
         raise
     except Exception as error:
+        print(f"❌ 文件预处理失败: {resolved_display_name} -> {error}")
         raise build_model_file_upload_error(resolved_display_name, error)
     finally:
         if temp_cleanup_dir:
@@ -340,15 +342,29 @@ async def save_upload_file(file: UploadFile) -> dict[str, object]:
         if file_size == 0:
             raise HTTPException(status_code=400, detail="上传失败：文件内容为空。")
 
-        await prepare_file_for_model(file_path, display_name=safe_name, file_kind=file_kind)
+        prepared_for_model = True
+        model_warning: str | None = None
+        try:
+            await prepare_file_for_model(file_path, display_name=safe_name, file_kind=file_kind)
+        except HTTPException as error:
+            prepared_for_model = False
+            model_warning = str(error.detail)
+            print(f"⚠️ 文件已上传到本地，但预处理失败: {safe_name} -> {model_warning}")
+        except Exception as error:
+            prepared_for_model = False
+            model_warning = build_file_upload_error(safe_name)
+            print(f"⚠️ 文件已上传到本地，但预处理出现异常: {safe_name} -> {error}")
+
         return {
-            "message": "文件上传并准备完成",
+            "message": "文件上传成功" if not prepared_for_model else "文件上传并准备完成",
             "file_path": str(file_path.relative_to(BASE_DIR)),
             "original_filename": safe_name,
             "mime_type": (file.content_type or "application/octet-stream").split(";")[0].strip().lower()
             or "application/octet-stream",
             "file_kind": file_kind,
             "file_size": file_size,
+            "prepared_for_model": prepared_for_model,
+            "model_warning": model_warning,
         }
     except Exception:
         if file_path.exists():

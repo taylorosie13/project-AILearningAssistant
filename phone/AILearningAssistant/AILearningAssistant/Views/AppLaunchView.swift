@@ -334,9 +334,14 @@ struct AppLaunchView: View {
             NavigationStack {
                 VStack(spacing: 24) {
                     VStack(spacing: 16) {
-                        Image(systemName: "graduationcap.circle.fill")
-                            .font(.system(size: heroIconSize))
-                            .foregroundColor(AppTheme.accent)
+                        Image("BrandLogo")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: heroIconSize, height: heroIconSize)
+                            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                        Text("知芽")
+                            .font(.system(size: 18, weight: .semibold, design: .rounded))
+                            .foregroundColor(AppTheme.accent.opacity(0.82))
                         Text("先把权限准备好")
                             .font(.system(size: heroTitleSize, weight: .bold, design: .rounded))
                             .foregroundColor(AppTheme.accent)

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from typing import Any, cast
 
 from fastapi import HTTPException
@@ -131,6 +132,36 @@ async def generate_content_with_retry(
         except Exception as error:
             last_error = error
             print(f"❌生成失败（第 {attempt + 1} 次）: {error}")
+            if attempt == 0:
+                await asyncio.sleep(1)
+
+    assert last_error is not None
+    raise translate_gemini_error(last_error)
+
+
+async def generate_content_stream_with_retry(
+    contents: list[dict[str, Any]],
+    system_instruction: str | None = None,
+):
+    current_client = ensure_client()
+    last_error: Exception | None = None
+
+    for attempt in range(2):
+        try:
+            stream_or_awaitable = current_client.aio.models.generate_content_stream(
+                model=GEMINI_MODEL,
+                contents=contents,
+                config={"system_instruction": system_instruction or SYSTEM_PROMPT},
+            )
+            stream = (
+                await stream_or_awaitable
+                if inspect.isawaitable(stream_or_awaitable)
+                else stream_or_awaitable
+            )
+            return stream
+        except Exception as error:
+            last_error = error
+            print(f"❌流式生成失败（第 {attempt + 1} 次）: {error}")
             if attempt == 0:
                 await asyncio.sleep(1)
 

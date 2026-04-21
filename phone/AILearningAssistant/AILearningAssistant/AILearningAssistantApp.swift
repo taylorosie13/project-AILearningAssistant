@@ -35,17 +35,18 @@ private struct LaunchPlaceholderView: View {
             AppTheme.background.ignoresSafeArea()
 
             VStack(spacing: 14) {
-                Image(systemName: "graduationcap.circle.fill")
-                    .font(.system(size: 64))
-                    .foregroundColor(AppTheme.accent)
+                Image("BrandLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 72, height: 72)
 
-                Text("学伴")
+                Text("知芽")
                     .font(.system(size: 28, weight: .bold, design: .rounded))
                     .foregroundColor(AppTheme.accent)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
 
-                Text("正在进入...")
+                Text("正在进入你的学习空间...")
                     .font(.system(size: 15, weight: .medium))
                     .foregroundColor(AppTheme.accent.opacity(0.7))
 

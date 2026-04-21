@@ -37,6 +37,7 @@ class ChatViewModel: ObservableObject {
 
     @Published var messages: [ChatMessage] = []
     @Published var inputText: String = ""
+    @Published var selectedLearningMode: LearningMode = .normal
     @Published private(set) var isLoading: Bool = false
     @Published var activeAlert: AlertState?
     @Published private(set) var processingStage: ProcessingStage = .idle
@@ -55,7 +56,7 @@ class ChatViewModel: ObservableObject {
     @Published var editingCardContent: String = ""
     @Published var editingCardCategory: String = ""
     @Published var editingCardTagsText: String = ""
-    @Published var editingCardID: Int?
+    @Published var editingCardID: String?
     
     // 追踪用户在 WebView 中选中的文本
     @Published var lastSelectedText: String = "" {
@@ -80,6 +81,10 @@ class ChatViewModel: ObservableObject {
     private var sendTask: Task<Void, Never>?
     private var attachmentUploadTasks: [UUID: Task<Void, Never>] = [:]
     private var hasLoadedInitialData = false
+    private var activeStreamingMessageID: UUID?
+    private var pendingStreamText: String = ""
+    private var isWaitingForStreamCompletion = false
+    private var streamRenderTask: Task<Void, Never>?
     
     var currentSessionId: String? = nil
 
@@ -371,11 +376,16 @@ class ChatViewModel: ObservableObject {
         activeSendID = UUID()
         sessionLoadTask?.cancel()
         sendTask?.cancel()
+        streamRenderTask?.cancel()
+        activeStreamingMessageID = nil
+        pendingStreamText = ""
+        isWaitingForStreamCompletion = false
         cancelAllAttachmentUploads()
         self.messages = []
         self.currentSessionId = nil
         self.selectedSessionId = nil
         self.inputText = ""
+        self.selectedLearningMode = .normal
         self.selectedAttachments = []
         self.isLoadingSession = false
         self.isSendingMessage = false
@@ -456,11 +466,77 @@ class ChatViewModel: ObservableObject {
         selectedAttachments = updatedAttachments
     }
 
+    private func markAttachmentUploadFailed(id: UUID, message: String) {
+        updateAttachmentState(id: id, state: .failed)
+        activeAlert = AlertState(
+            title: "文件还没准备好",
+            message: message
+        )
+    }
+
     private func cancelAllAttachmentUploads() {
         for task in attachmentUploadTasks.values {
             task.cancel()
         }
         attachmentUploadTasks.removeAll()
+    }
+
+    private func enqueueStreamingText(_ text: String, for messageID: UUID) {
+        guard !text.isEmpty else { return }
+        activeStreamingMessageID = messageID
+        pendingStreamText += text
+        startStreamRendererIfNeeded(for: messageID)
+    }
+
+    private func startStreamRendererIfNeeded(for messageID: UUID) {
+        guard streamRenderTask == nil else { return }
+        streamRenderTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.streamRenderTask = nil }
+
+            while !Task.isCancelled {
+                guard self.activeStreamingMessageID == messageID else { break }
+
+                if self.pendingStreamText.isEmpty {
+                    if self.isWaitingForStreamCompletion {
+                        break
+                    }
+                    try? await Task.sleep(nanoseconds: 35_000_000)
+                    continue
+                }
+
+                let chunkSize = min(max(2, self.pendingStreamText.count / 12), 12)
+                let nextChunk = String(self.pendingStreamText.prefix(chunkSize))
+                self.pendingStreamText.removeFirst(nextChunk.count)
+
+                if let index = self.messages.firstIndex(where: { $0.id == messageID }) {
+                    self.messages[index].content += nextChunk
+                }
+
+                try? await Task.sleep(nanoseconds: 38_000_000)
+            }
+        }
+    }
+
+    private func finishStreamingText(for messageID: UUID, finalResponse: String?) async {
+        isWaitingForStreamCompletion = true
+
+        while !pendingStreamText.isEmpty {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+
+        _ = await streamRenderTask?.result
+
+        if let index = messages.firstIndex(where: { $0.id == messageID }) {
+            if let finalResponse, !finalResponse.isEmpty {
+                messages[index].content = finalResponse
+            }
+            messages[index].isStreaming = false
+        }
+
+        activeStreamingMessageID = nil
+        pendingStreamText = ""
+        isWaitingForStreamCompletion = false
     }
 
     func sendMessage() {
@@ -474,11 +550,14 @@ class ChatViewModel: ObservableObject {
         let textToSend = trimmedInput
         let attachmentsToSend = selectedAttachments
         let localMessageID = UUID()
+        let localAIMessageID = UUID()
         let sendID = UUID()
         activeSendID = sendID
         
         let userMsg = ChatMessage(id: localMessageID, role: "user", content: textToSend, filePaths: nil)
         messages.append(userMsg)
+        let aiPlaceholder = ChatMessage(id: localAIMessageID, role: "model", content: "", filePaths: nil, isStreaming: true)
+        messages.append(aiPlaceholder)
         
         inputText = ""
         isSendingMessage = true
@@ -493,29 +572,13 @@ class ChatViewModel: ObservableObject {
             do {
                 var uploadedFilePaths: [String] = []
                 for attachment in attachmentsToSend {
-                    if let uploadedPath = attachment.uploadedPath {
-                        uploadedFilePaths.append(uploadedPath)
-                        self.updateAttachmentState(id: attachment.id, state: .processing, uploadedPath: uploadedPath)
-                        continue
+                    guard let uploadedPath = attachment.uploadedPath else {
+                        throw NetworkError.serverError(
+                            statusCode: -1,
+                            message: "《\(attachment.displayName)》还没准备好，请等附件显示“已就绪”后再发送。"
+                        )
                     }
-
-                    self.processingStage = .uploadingFile(attachment.displayName)
-                    self.updateAttachmentState(id: attachment.id, state: .uploading, uploadProgress: 0)
-                    let uploadResp = try await uploadAttachment(
-                        attachment,
-                        onProgress: { progress in
-                            Task { @MainActor [weak self] in
-                                self?.updateAttachmentState(id: attachment.id, state: .uploading, uploadProgress: progress)
-                            }
-                        },
-                        onServerProcessing: {
-                            Task { @MainActor [weak self] in
-                                self?.updateAttachmentState(id: attachment.id, state: .processing, uploadProgress: 0.9)
-                            }
-                        }
-                    )
-                    uploadedFilePaths.append(uploadResp.file_path)
-                    self.updateAttachmentState(id: attachment.id, state: .processing, uploadedPath: uploadResp.file_path)
+                    uploadedFilePaths.append(uploadedPath)
                 }
 
                 guard !Task.isCancelled, sendID == self.activeSendID else { return }
@@ -526,22 +589,41 @@ class ChatViewModel: ObservableObject {
                 }
 
                 let officeDocumentCount = attachmentsToSend.filter(\.requiresServerDocumentPreparation).count
-                self.processingStage = officeDocumentCount > 0
-                    ? .preparingDocuments(officeDocumentCount)
-                    : .requestingModel
+                if officeDocumentCount > 0 {
+                    self.processingStage = .preparingDocuments(officeDocumentCount)
+                }
+                self.processingStage = .requestingModel
 
-                let response = try await NetworkManager.shared.sendMessage(
+                try await NetworkManager.shared.streamMessage(
                     prompt: textToSend,
                     sessionId: self.currentSessionId,
-                    filePaths: uploadedFilePaths.isEmpty ? nil : uploadedFilePaths
-                )
+                    filePaths: uploadedFilePaths.isEmpty ? nil : uploadedFilePaths,
+                    learningMode: self.selectedLearningMode
+                ) { [weak self] eventType, payload in
+                    guard let self else { return }
+                    guard !Task.isCancelled, sendID == self.activeSendID else { return }
+
+                    switch eventType {
+                    case .session:
+                        if let sessionID = payload.session_id, !sessionID.isEmpty {
+                            self.currentSessionId = sessionID
+                        }
+                    case .delta:
+                        guard let text = payload.text, !text.isEmpty else { return }
+                        self.enqueueStreamingText(text, for: localAIMessageID)
+                    case .done:
+                        return
+                    case .error:
+                        return
+                    }
+                }
 
                 guard !Task.isCancelled, sendID == self.activeSendID else { return }
-                
-                self.processingStage = .requestingModel
-                self.currentSessionId = response.session_id
-                let aiMsg = ChatMessage(role: "model", content: response.response, filePaths: nil)
-                self.messages.append(aiMsg)
+                await self.finishStreamingText(for: localAIMessageID, finalResponse: nil)
+                if let index = self.messages.firstIndex(where: { $0.id == localAIMessageID }),
+                   self.messages[index].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.messages.removeAll(where: { $0.id == localAIMessageID })
+                }
                 self.selectedAttachments = []
                 
             } catch is CancellationError {
@@ -551,10 +633,11 @@ class ChatViewModel: ObservableObject {
                 if self.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     self.inputText = textToSend
                 }
-                self.messages.removeAll(where: { $0.id == localMessageID })
-                for attachment in attachmentsToSend {
-                    self.updateAttachmentState(id: attachment.id, state: .failed)
-                }
+                self.streamRenderTask?.cancel()
+                self.activeStreamingMessageID = nil
+                self.pendingStreamText = ""
+                self.isWaitingForStreamCompletion = false
+                self.messages.removeAll(where: { $0.id == localMessageID || $0.id == localAIMessageID })
                 self.presentError(error, fallback: "发送消息失败")
             }
         }
@@ -693,7 +776,14 @@ class ChatViewModel: ObservableObject {
 
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    self.updateAttachmentState(id: id, state: .uploaded, uploadedPath: response.file_path)
+                    if response.prepared_for_model {
+                        self.updateAttachmentState(id: id, state: .uploaded, uploadedPath: response.file_path)
+                    } else {
+                        self.markAttachmentUploadFailed(
+                            id: id,
+                            message: response.model_warning ?? "服务器已经收到了文件，但暂时还没准备好给 AI 使用。请稍等一下再重试。"
+                        )
+                    }
                     self.attachmentUploadTasks[id] = nil
                 }
             } catch is CancellationError {

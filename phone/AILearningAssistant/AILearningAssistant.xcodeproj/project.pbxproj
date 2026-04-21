@@ -261,8 +261,9 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_API_BASE_URL = "$(API_BASE_URL)";
+				INFOPLIST_KEY_CFBundleDisplayName = "知芽";
 				INFOPLIST_KEY_NSCameraUsageDescription = "我们需要使用相机来拍摄学习题目";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "我们需要访问本地网络，连接同一局域网里的学习助手后端服务。";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "我们需要访问本地网络，连接同一局域网里的知芽后端服务。";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "我们需要使用麦克风来录制语音问题";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "我们需要读取相册来上传图片";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "我们需要将语音实时转换成文字，方便你编辑后再提问";
@@ -314,8 +315,9 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_API_BASE_URL = "$(API_BASE_URL)";
+				INFOPLIST_KEY_CFBundleDisplayName = "知芽";
 				INFOPLIST_KEY_NSCameraUsageDescription = "我们需要使用相机来拍摄学习题目";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "我们需要访问本地网络，连接同一局域网里的学习助手后端服务。";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "我们需要访问本地网络，连接同一局域网里的知芽后端服务。";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "我们需要使用麦克风来录制语音问题";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "我们需要读取相册来上传图片";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "我们需要将语音实时转换成文字，方便你编辑后再提问";

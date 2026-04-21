@@ -85,6 +85,14 @@ nonisolated struct ChatRequestBody: Encodable {
     let prompt: String
     let session_id: String?
     let file_paths: [String]?
+    let learning_mode: LearningMode
+}
+
+enum ChatStreamEventType: String {
+    case session
+    case delta
+    case done
+    case error
 }
 
 enum NetworkError: LocalizedError {
@@ -244,7 +252,12 @@ final class NetworkManager: Sendable {
         return data
     }
     
-    nonisolated func sendMessage(prompt: String, sessionId: String?, filePaths: [String]?) async throws -> ChatResponse {
+    nonisolated func sendMessage(
+        prompt: String,
+        sessionId: String?,
+        filePaths: [String]?,
+        learningMode: LearningMode = .normal
+    ) async throws -> ChatResponse {
         let url = try makeURL(path: "/chat")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -254,12 +267,74 @@ final class NetworkManager: Sendable {
             ChatRequestBody(
                 prompt: prompt,
                 session_id: sessionId,
-                file_paths: filePaths?.isEmpty == true ? nil : filePaths
+                file_paths: filePaths?.isEmpty == true ? nil : filePaths,
+                learning_mode: learningMode
             )
         )
 
         let data = try await send(request, using: longRunningSession)
         return try JSONDecoder().decode(ChatResponse.self, from: data)
+    }
+
+    nonisolated func streamMessage(
+        prompt: String,
+        sessionId: String?,
+        filePaths: [String]?,
+        learningMode: LearningMode = .normal,
+        onEvent: @escaping @Sendable @MainActor (ChatStreamEventType, ChatStreamEvent) -> Void
+    ) async throws {
+        let url = try makeURL(path: "/chat/stream")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60 * 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONEncoder().encode(
+            ChatRequestBody(
+                prompt: prompt,
+                session_id: sessionId,
+                file_paths: filePaths?.isEmpty == true ? nil : filePaths,
+                learning_mode: learningMode
+            )
+        )
+
+        do {
+            let (bytes, response) = try await longRunningSession.bytes(for: request)
+            _ = try decodeResponse(data: Data(), response: response)
+
+            var currentEvent = "message"
+            for try await line in bytes.lines {
+                if Task.isCancelled { return }
+
+                if line.isEmpty {
+                    continue
+                }
+
+                if line.hasPrefix("event:") {
+                    currentEvent = line.replacingOccurrences(of: "event:", with: "")
+                        .trimmingCharacters(in: .whitespaces)
+                    continue
+                }
+
+                guard line.hasPrefix("data:") else { continue }
+                let dataString = line.replacingOccurrences(of: "data:", with: "")
+                    .trimmingCharacters(in: .whitespaces)
+                guard let data = dataString.data(using: .utf8) else { continue }
+                let payload = try JSONDecoder().decode(ChatStreamEvent.self, from: data)
+                let eventType = ChatStreamEventType(rawValue: currentEvent) ?? .delta
+                if eventType == .error {
+                    let message = payload.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "服务有点异常，请稍后再试。"
+                    throw NetworkError.serverError(statusCode: -1, message: message)
+                }
+                await onEvent(eventType, payload)
+            }
+        } catch let error as NetworkError {
+            throw error
+        } catch let error as URLError {
+            throw NetworkError.transportError(message: NetworkError.userFriendlyTransportMessage(for: error))
+        } catch let error as DecodingError {
+            throw NetworkError.transportError(message: "流式响应解析失败：\(error.localizedDescription)")
+        }
     }
     
     nonisolated func uploadFile(
@@ -470,7 +545,7 @@ final class NetworkManager: Sendable {
         return response.message
     }
 
-    nonisolated func deleteKnowledgeCard(cardId: Int) async throws {
+    nonisolated func deleteKnowledgeCard(cardId: String) async throws {
         let url = try makeURL(path: "/cards/\(cardId)")
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
@@ -479,7 +554,7 @@ final class NetworkManager: Sendable {
         _ = try await send(request)
     }
 
-    nonisolated func updateKnowledgeCard(cardId: Int, card: KnowledgeCardUpdate) async throws -> String {
+    nonisolated func updateKnowledgeCard(cardId: String, card: KnowledgeCardUpdate) async throws -> String {
         let url = try makeURL(path: "/cards/\(cardId)")
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
@@ -560,7 +635,7 @@ final class NetworkManager: Sendable {
         return try JSONDecoder().decode(CardExtractionResponse.self, from: data)
     }
 
-    nonisolated func expandCardToNote(cardId: Int) async throws -> NoteGenerationResponse {
+    nonisolated func expandCardToNote(cardId: String) async throws -> NoteGenerationResponse {
         let url = try makeURL(path: "/cards/\(cardId)/expand-note")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

@@ -262,17 +262,53 @@ extension UTType {
     }
 }
 
+enum LearningMode: String, Codable, CaseIterable, Identifiable {
+    case normal
+    case feynman
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .normal:
+            return "普通问答"
+        case .feynman:
+            return "费曼学习法"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .normal:
+            return "直接提问，直接回答"
+        case .feynman:
+            return "先让你讲清楚，再追问补漏洞"
+        }
+    }
+
+    var systemImageName: String {
+        switch self {
+        case .normal:
+            return "bubble.left.and.bubble.right"
+        case .feynman:
+            return "person.crop.rectangle.stack"
+        }
+    }
+}
+
 nonisolated struct ChatMessage: Identifiable, Codable {
     let id: UUID
     let role: String
-    let content: String
+    var content: String
     var filePaths: [String]?
+    var isStreaming: Bool
 
-    init(id: UUID = UUID(), role: String, content: String, filePaths: [String]? = nil) {
+    init(id: UUID = UUID(), role: String, content: String, filePaths: [String]? = nil, isStreaming: Bool = false) {
         self.id = id
         self.role = role
         self.content = content
         self.filePaths = filePaths
+        self.isStreaming = isStreaming
     }
     
     enum CodingKeys: String, CodingKey {
@@ -286,6 +322,7 @@ nonisolated struct ChatMessage: Identifiable, Codable {
         self.role = try container.decode(String.self, forKey: .role)
         self.content = try container.decode(String.self, forKey: .content)
         self.filePaths = try container.decodeIfPresent([String].self, forKey: .filePaths)
+        self.isStreaming = false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -299,6 +336,13 @@ nonisolated struct ChatMessage: Identifiable, Codable {
 nonisolated struct ChatResponse: Codable {
     let session_id: String
     let response: String
+}
+
+nonisolated struct ChatStreamEvent: Decodable {
+    let session_id: String?
+    let text: String?
+    let response: String?
+    let detail: String?
 }
 
 nonisolated struct ChatSession: Identifiable, Codable {
@@ -319,11 +363,13 @@ nonisolated struct UploadResponse: Codable {
     let mime_type: String
     let file_kind: AttachmentKind
     let file_size: Int
+    let prepared_for_model: Bool
+    let model_warning: String?
 }
 
 // MARK: - 知识卡片相关模型
 nonisolated struct KnowledgeCard: Identifiable, Codable {
-    let id: Int
+    let id: String
     let title: String
     let content: String
     let category: String?
@@ -332,13 +378,14 @@ nonisolated struct KnowledgeCard: Identifiable, Codable {
     let created_at: String
     
     enum CodingKeys: String, CodingKey {
-        case id, title, content, category, tags, created_at
+        case title, content, category, tags, created_at
+        case id = "card_id"
         case source_session_id = "source_session_id"
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(Int.self, forKey: .id)
+        id = try container.decode(String.self, forKey: .id)
         title = try container.decode(String.self, forKey: .title)
         content = try container.decode(String.self, forKey: .content)
         category = try container.decodeIfPresent(String.self, forKey: .category)
@@ -493,5 +540,5 @@ nonisolated struct NoteGenerationResponse: Codable {
 
 nonisolated struct CardExtractionResponse: Codable {
     let message: String
-    let card_id: Int
+    let card_id: String
 }

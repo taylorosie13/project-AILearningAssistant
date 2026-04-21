@@ -18,15 +18,14 @@
                             <stackView opaque="NO" contentMode="scaleToFill" axis="vertical" spacing="16" translatesAutoresizingMaskIntoConstraints="NO" id="v9N-7V-z6K">
                                 <rect key="frame" x="170" y="403.33333333333331" width="100" height="149.66666666666669"/>
                                 <subviews>
-                                    <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" horizontalHuggingPriority="251" verticalHuggingPriority="251" image="graduationcap.circle.fill" catalog="system" translatesAutoresizingMaskIntoConstraints="NO" id="k8M-N8-hv3">
-                                        <rect key="frame" x="0.0" y="0.6666666666666643" width="100" height="98.666666666666686"/>
-                                        <color key="tintColor" red="0.2470588235" green="0.34901960780000002" blue="0.2470588235" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                                    <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" horizontalHuggingPriority="251" verticalHuggingPriority="251" image="BrandLogo" translatesAutoresizingMaskIntoConstraints="NO" id="k8M-N8-hv3">
+                                        <rect key="frame" x="0.0" y="0.6666666666666643" width="100" height="100"/>
                                         <constraints>
                                             <constraint firstAttribute="width" constant="100" id="m6q-y5-NnD"/>
                                             <constraint firstAttribute="height" constant="100" id="zPj-7x-rx0"/>
                                         </constraints>
                                     </imageView>
-                                    <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="学伴" textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" minimumScaleFactor="0.80000000000000004" translatesAutoresizingMaskIntoConstraints="NO" id="u7X-I6-W1t">
+                                    <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="知芽" textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" minimumScaleFactor="0.80000000000000004" translatesAutoresizingMaskIntoConstraints="NO" id="u7X-I6-W1t">
                                         <rect key="frame" x="0.0" y="116.00000000000007" width="100" height="33.666666666666671"/>
                                         <fontDescription key="fontDescription" type="boldSystem" pointSize="28"/>
                                         <color key="textColor" red="0.2470588235" green="0.34901960780000002" blue="0.2470588235" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
@@ -52,6 +51,6 @@
         </scene>
     </scenes>
     <resources>
-        <image name="graduationcap.circle.fill" catalog="system" width="128" height="123"/>
+        <image name="BrandLogo" width="1024" height="1024"/>
     </resources>
 </document>
