@@ -296,19 +296,27 @@ enum LearningMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+nonisolated struct StreamingTextSegment: Identifiable, Hashable {
+    let id = UUID()
+    let text: String
+    let createdAt: Date
+}
+
 nonisolated struct ChatMessage: Identifiable, Codable {
     let id: UUID
     let role: String
     var content: String
     var filePaths: [String]?
     var isStreaming: Bool
+    var streamingSegments: [StreamingTextSegment]
 
-    init(id: UUID = UUID(), role: String, content: String, filePaths: [String]? = nil, isStreaming: Bool = false) {
+    init(id: UUID = UUID(), role: String, content: String, filePaths: [String]? = nil, isStreaming: Bool = false, streamingSegments: [StreamingTextSegment] = []) {
         self.id = id
         self.role = role
         self.content = content
         self.filePaths = filePaths
         self.isStreaming = isStreaming
+        self.streamingSegments = streamingSegments
     }
     
     enum CodingKeys: String, CodingKey {
@@ -323,6 +331,7 @@ nonisolated struct ChatMessage: Identifiable, Codable {
         self.content = try container.decode(String.self, forKey: .content)
         self.filePaths = try container.decodeIfPresent([String].self, forKey: .filePaths)
         self.isStreaming = false
+        self.streamingSegments = []
     }
 
     func encode(to encoder: Encoder) throws {

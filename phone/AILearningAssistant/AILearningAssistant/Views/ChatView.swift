@@ -53,6 +53,8 @@ struct ChatView: View {
     @State private var cameraImage: UIImage? = nil
     @State private var showSidebar = false
     @State private var bannerTask: Task<Void, Never>?
+    @State private var isMessageScrollActive = false
+    @State private var scrollIdleTask: Task<Void, Never>?
     
     var body: some View {
         NavigationStack {
@@ -64,12 +66,17 @@ struct ChatView: View {
                     
                     ScrollViewReader { proxy in
                         ScrollView {
-                            LazyVStack(spacing: 24) {
+                            VStack(spacing: 24) {
                                 if viewModel.messages.isEmpty {
                                     EmptyStateView()
                                 } else {
                                     ForEach(viewModel.messages) { message in
-                                        MessageBubble(message: message, viewModel: viewModel, noteViewModel: noteViewModel)
+                                        MessageBubble(
+                                            message: message,
+                                            viewModel: viewModel,
+                                            noteViewModel: noteViewModel,
+                                            isMessageScrollActive: isMessageScrollActive
+                                        )
                                             .transition(.asymmetric(
                                                 insertion: .move(edge: .bottom).combined(with: .opacity),
                                                 removal: .opacity
@@ -91,6 +98,15 @@ struct ChatView: View {
                             }
                         }
                         .scrollDismissesKeyboard(.interactively)
+                        .simultaneousGesture(
+                            DragGesture(minimumDistance: 8)
+                                .onChanged { _ in
+                                    markMessageScrollActive()
+                                }
+                                .onEnded { _ in
+                                    scheduleMessageScrollIdle()
+                                }
+                        )
                     }
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         InputArea(
@@ -232,6 +248,9 @@ struct ChatView: View {
                         cameraImage = nil
                     }
                 }
+                .onDisappear {
+                    scrollIdleTask?.cancel()
+                }
                 .task {
                     guard startupLocalNetworkApproved else { return }
                     try? await Task.sleep(nanoseconds: 300_000_000)
@@ -250,6 +269,21 @@ struct ChatView: View {
     private func scrollToBottom(proxy: ScrollViewProxy) {
         if let last = viewModel.messages.last {
             proxy.scrollTo(last.id, anchor: .bottom)
+        }
+    }
+
+    private func markMessageScrollActive() {
+        scrollIdleTask?.cancel()
+        guard !isMessageScrollActive else { return }
+        isMessageScrollActive = true
+    }
+
+    private func scheduleMessageScrollIdle() {
+        scrollIdleTask?.cancel()
+        scrollIdleTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            isMessageScrollActive = false
         }
     }
 }
@@ -549,6 +583,7 @@ struct MessageBubble: View {
     let message: ChatMessage
     @ObservedObject var viewModel: ChatViewModel
     @ObservedObject var noteViewModel: NoteViewModel
+    let isMessageScrollActive: Bool
     var isUser: Bool { message.role == "user" }
     
     var body: some View {
@@ -606,11 +641,11 @@ struct MessageBubble: View {
                     
                     if !message.content.isEmpty {
                         if message.isStreaming {
-                            Text(message.content)
-                                .font(.system(size: 16, weight: .regular, design: .rounded))
-                                .foregroundColor(Color(white: 0.15))
-                                .lineSpacing(5)
-                                .textSelection(.enabled)
+                            StreamingResponseText(
+                                content: message.content,
+                                segments: message.streamingSegments,
+                                isAnimationPaused: isMessageScrollActive
+                            )
                                 .padding(.top, 4)
                         } else {
                             MarkdownView(content: message.content, viewModel: viewModel)
@@ -654,6 +689,66 @@ struct MessageBubble: View {
             }
         }
         .padding(.horizontal, 16)
+    }
+}
+
+struct StreamingResponseText: View {
+    let content: String
+    let segments: [StreamingTextSegment]
+    let isAnimationPaused: Bool
+    private let baseTextColor = Color(white: 0.15)
+    private let fadeDuration: TimeInterval = 0.55
+
+    var body: some View {
+        Group {
+            if isAnimationPaused || segments.isEmpty {
+                Text(content)
+                    .foregroundColor(baseTextColor)
+            } else {
+                TimelineView(.periodic(from: Date(), by: 1.0 / 20.0)) { timeline in
+                    fadedText(at: timeline.date)
+                }
+            }
+        }
+        .font(.system(size: 16, weight: .regular, design: .rounded))
+        .lineSpacing(5)
+    }
+
+    private func fadedText(at date: Date) -> Text {
+        var attributedContent = AttributedString(content)
+        attributedContent.foregroundColor = baseTextColor
+
+        let visibleSegments = segments.filter { !content.isEmpty && date.timeIntervalSince($0.createdAt) < 1.2 }
+        let fadedCharacterCount = min(
+            visibleSegments.reduce(0) { $0 + $1.text.count },
+            attributedContent.characters.count
+        )
+
+        guard fadedCharacterCount > 0 else {
+            return Text(attributedContent)
+        }
+
+        var currentIndex = attributedContent.characters.index(
+            attributedContent.endIndex,
+            offsetBy: -fadedCharacterCount
+        )
+
+        for segment in visibleSegments where currentIndex < attributedContent.endIndex {
+            let segmentLength = min(segment.text.count, attributedContent.characters.distance(from: currentIndex, to: attributedContent.endIndex))
+            let nextIndex = attributedContent.characters.index(
+                currentIndex,
+                offsetBy: segmentLength,
+                limitedBy: attributedContent.endIndex
+            ) ?? attributedContent.endIndex
+            let age = max(0, date.timeIntervalSince(segment.createdAt))
+            let progress = min(1, age / fadeDuration)
+            let easedProgress = 1 - pow(1 - progress, 2)
+            let opacity = 0.32 + 0.68 * easedProgress
+            attributedContent[currentIndex..<nextIndex].foregroundColor = baseTextColor.opacity(opacity)
+            currentIndex = nextIndex
+        }
+
+        return Text(attributedContent)
     }
 }
 
@@ -1244,14 +1339,11 @@ struct EmptyStateView: View {
     var body: some View {
         VStack(spacing: 25) {
             Spacer(minLength: 80)
-            ZStack {
-                Circle().fill(AppTheme.accent.opacity(0.05)).frame(width: 120, height: 120)
-                Image("BrandLogo")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 68, height: 68)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            }
+            Image("BrandLogo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 68, height: 68)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             VStack(spacing: 8) {
                 Text("知芽，陪你把知识学明白").font(.system(.title3, design: .rounded).bold()).foregroundColor(AppTheme.accent)
                 Text("拍题、语音、笔记、卡片，都能接着学。").font(.subheadline).foregroundColor(.gray)

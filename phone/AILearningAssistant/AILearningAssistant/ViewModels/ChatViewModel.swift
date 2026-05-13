@@ -81,8 +81,10 @@ class ChatViewModel: ObservableObject {
     private var sendTask: Task<Void, Never>?
     private var attachmentUploadTasks: [UUID: Task<Void, Never>] = [:]
     private var hasLoadedInitialData = false
+    @Published private(set) var streamingScrollToken = UUID()
     private var activeStreamingMessageID: UUID?
     private var pendingStreamText: String = ""
+    private var pendingStreamBatchStartedAt: Date?
     private var isWaitingForStreamCompletion = false
     private var streamRenderTask: Task<Void, Never>?
     
@@ -379,6 +381,7 @@ class ChatViewModel: ObservableObject {
         streamRenderTask?.cancel()
         activeStreamingMessageID = nil
         pendingStreamText = ""
+        pendingStreamBatchStartedAt = nil
         isWaitingForStreamCompletion = false
         cancelAllAttachmentUploads()
         self.messages = []
@@ -484,6 +487,9 @@ class ChatViewModel: ObservableObject {
     private func enqueueStreamingText(_ text: String, for messageID: UUID) {
         guard !text.isEmpty else { return }
         activeStreamingMessageID = messageID
+        if pendingStreamText.isEmpty {
+            pendingStreamBatchStartedAt = Date()
+        }
         pendingStreamText += text
         startStreamRendererIfNeeded(for: messageID)
     }
@@ -505,17 +511,66 @@ class ChatViewModel: ObservableObject {
                     continue
                 }
 
-                let chunkSize = min(max(2, self.pendingStreamText.count / 12), 12)
-                let nextChunk = String(self.pendingStreamText.prefix(chunkSize))
-                self.pendingStreamText.removeFirst(nextChunk.count)
-
-                if let index = self.messages.firstIndex(where: { $0.id == messageID }) {
-                    self.messages[index].content += nextChunk
+                let batchAge = Date().timeIntervalSince(self.pendingStreamBatchStartedAt ?? Date())
+                if !self.isWaitingForStreamCompletion,
+                   self.pendingStreamText.count < 3,
+                   batchAge < 0.12 {
+                    try? await Task.sleep(nanoseconds: 35_000_000)
+                    continue
                 }
 
-                try? await Task.sleep(nanoseconds: 38_000_000)
+                let currentLength = self.messages.first(where: { $0.id == messageID })?.content.count ?? 0
+                let backlogSize = self.pendingStreamText.count
+                let chunkSize = self.streamingDisplayChunkSize(
+                    backlogSize: backlogSize,
+                    currentLength: currentLength,
+                    isFinishing: self.isWaitingForStreamCompletion
+                )
+                let nextChunk = String(self.pendingStreamText.prefix(chunkSize))
+                self.pendingStreamText.removeFirst(nextChunk.count)
+                self.pendingStreamBatchStartedAt = self.pendingStreamText.isEmpty ? nil : Date()
+
+                if let index = self.messages.firstIndex(where: { $0.id == messageID }) {
+                    let now = Date()
+                    self.messages[index].content += nextChunk
+                    self.messages[index].streamingSegments.append(
+                        StreamingTextSegment(text: nextChunk, createdAt: now)
+                    )
+                    self.messages[index].streamingSegments.removeAll {
+                        now.timeIntervalSince($0.createdAt) > 1.2
+                    }
+                    self.streamingScrollToken = UUID()
+                }
+
+                let renderDelay = self.isWaitingForStreamCompletion ? 55_000_000 : 115_000_000
+                try? await Task.sleep(nanoseconds: UInt64(renderDelay))
             }
         }
+    }
+
+    private func streamingDisplayChunkSize(
+        backlogSize: Int,
+        currentLength: Int,
+        isFinishing: Bool
+    ) -> Int {
+        if isFinishing {
+            return min(backlogSize, 28)
+        }
+
+        if backlogSize > 500 {
+            return min(backlogSize, 12)
+        }
+
+        if backlogSize > 220 {
+            return min(backlogSize, 8)
+        }
+
+        if backlogSize > 80 {
+            return min(backlogSize, 5)
+        }
+
+        let earlyAnswerBoost = currentLength < 40 ? 1 : 0
+        return min(backlogSize, 2 + earlyAnswerBoost)
     }
 
     private func finishStreamingText(for messageID: UUID, finalResponse: String?) async {
@@ -532,10 +587,12 @@ class ChatViewModel: ObservableObject {
                 messages[index].content = finalResponse
             }
             messages[index].isStreaming = false
+            messages[index].streamingSegments = []
         }
 
         activeStreamingMessageID = nil
         pendingStreamText = ""
+        pendingStreamBatchStartedAt = nil
         isWaitingForStreamCompletion = false
     }
 
@@ -636,6 +693,7 @@ class ChatViewModel: ObservableObject {
                 self.streamRenderTask?.cancel()
                 self.activeStreamingMessageID = nil
                 self.pendingStreamText = ""
+                self.pendingStreamBatchStartedAt = nil
                 self.isWaitingForStreamCompletion = false
                 self.messages.removeAll(where: { $0.id == localMessageID || $0.id == localAIMessageID })
                 self.presentError(error, fallback: "发送消息失败")
