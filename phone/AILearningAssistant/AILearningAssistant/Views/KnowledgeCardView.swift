@@ -3,6 +3,7 @@ import SwiftUI
 struct KnowledgeCardView: View {
     @ObservedObject var viewModel: ChatViewModel
     @ObservedObject var noteViewModel: NoteViewModel
+    let onAskAI: (KnowledgeCard) -> Void
     @Environment(\.dismiss) var dismiss
     @State private var searchText = ""
     @State private var collapsedCategories: Set<String> = []
@@ -91,6 +92,10 @@ struct KnowledgeCardView: View {
                                     viewModel: viewModel,
                                     noteViewModel: noteViewModel,
                                     cards: group.cards,
+                                    onAskAI: { card in
+                                        onAskAI(card)
+                                        dismiss()
+                                    },
                                     onToggle: {
                                         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                                             toggleCategory(group.category)
@@ -168,6 +173,7 @@ struct CategorySection: View {
     @ObservedObject var viewModel: ChatViewModel
     @ObservedObject var noteViewModel: NoteViewModel
     let cards: [KnowledgeCard]
+    let onAskAI: (KnowledgeCard) -> Void
     let onToggle: () -> Void
 
     var body: some View {
@@ -196,7 +202,12 @@ struct CategorySection: View {
 
             if !isCollapsed {
                 ForEach(cards) { card in
-                    CardRow(card: card, viewModel: viewModel, noteViewModel: noteViewModel)
+                    CardRow(
+                        card: card,
+                        viewModel: viewModel,
+                        noteViewModel: noteViewModel,
+                        onAskAI: onAskAI
+                    )
                 }
             }
         }
@@ -207,8 +218,8 @@ struct CardRow: View {
     let card: KnowledgeCard
     @ObservedObject var viewModel: ChatViewModel
     @ObservedObject var noteViewModel: NoteViewModel
+    let onAskAI: (KnowledgeCard) -> Void
     @State private var isExpanded = false
-    @State private var showingAskAISheet = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -258,7 +269,7 @@ struct CardRow: View {
             }
             
             HStack {
-                Button(action: { showingAskAISheet = true }) {
+                Button(action: { onAskAI(card) }) {
                     Label("问AI", systemImage: "sparkles")
                         .font(.caption)
                         .foregroundColor(.white)
@@ -313,16 +324,6 @@ struct CardRow: View {
         .background(Color.white)
         .cornerRadius(16)
         .shadow(color: AppTheme.shadow, radius: 4, x: 0, y: 2)
-        .sheet(isPresented: $showingAskAISheet) {
-            ContextQuestionSheet(
-                title: "卡片提问",
-                placeholder: "比如：这张卡片最值得记住的点是什么？可以怎么理解？",
-                chatViewModel: viewModel,
-                askAction: { question in
-                    try await viewModel.askAIAboutCard(card, question: question)
-                }
-            )
-        }
     }
 }
 

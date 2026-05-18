@@ -64,7 +64,7 @@ private final class UploadTaskDelegate: NSObject, URLSessionTaskDelegate, URLSes
 }
 
 enum AppConfiguration {
-    static let defaultBaseURL = "http://10.59.7.146:8000"
+    static let defaultBaseURL = "http://192.168.1.246:8000"
 
     static var apiBaseURL: String {
         let configuredURL = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String

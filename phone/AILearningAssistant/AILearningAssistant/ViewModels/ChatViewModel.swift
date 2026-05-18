@@ -109,7 +109,15 @@ class ChatViewModel: ObservableObject {
 
     var canSendCurrentMessage: Bool {
         let hasText = !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasReadyAttachments = selectedAttachments.contains { $0.uploadedPath != nil }
+        let hasReadyAttachments = selectedAttachments.contains {
+            $0.uploadedPath != nil && !$0.requiresUserQuestion
+        }
+        let hasQuestionContext = selectedAttachments.contains {
+            $0.uploadedPath != nil && $0.requiresUserQuestion
+        }
+        if hasQuestionContext && !hasText {
+            return false
+        }
         guard hasText || hasReadyAttachments else { return false }
         guard !isLoading else { return false }
         guard !hasPendingAttachmentUploads else { return false }
@@ -393,6 +401,26 @@ class ChatViewModel: ObservableObject {
         self.isLoadingSession = false
         self.isSendingMessage = false
     }
+
+    func startNewChat(with card: KnowledgeCard) {
+        startNewChat()
+
+        let markdown = buildKnowledgeCardAttachmentMarkdown(card)
+        guard let data = markdown.data(using: .utf8) else {
+            activeAlert = AlertState(title: "卡片准备失败", message: "这张卡片暂时不能作为附件使用。")
+            return
+        }
+
+        queueAttachmentForUpload(
+            LocalAttachment(
+                displayName: knowledgeCardAttachmentFileName(for: card),
+                fileKind: .document,
+                mimeType: "text/markdown",
+                data: data,
+                requiresUserQuestion: true
+            )
+        )
+    }
     
     func selectSession(_ session: ChatSession) {
         activeAlert = nil
@@ -428,6 +456,49 @@ class ChatViewModel: ObservableObject {
                 self.isLoadingSession = false
             }
         }
+    }
+
+    private func buildKnowledgeCardAttachmentMarkdown(_ card: KnowledgeCard) -> String {
+        var sections = [
+            "# \(card.title)",
+            "",
+            "> 这是一张知识卡片。请把它当作用户本次提问的参考材料。",
+        ]
+
+        if let category = card.category?.trimmingCharacters(in: .whitespacesAndNewlines), !category.isEmpty {
+            sections += [
+                "",
+                "分类：\(category)",
+            ]
+        }
+
+        if !card.tags.isEmpty {
+            sections += [
+                "",
+                "标签：\(card.tags.joined(separator: "、"))",
+            ]
+        }
+
+        sections += [
+            "",
+            "## 卡片内容",
+            card.content.trimmingCharacters(in: .whitespacesAndNewlines),
+        ]
+
+        return sections.joined(separator: "\n")
+    }
+
+    private func knowledgeCardAttachmentFileName(for card: KnowledgeCard) -> String {
+        let rawTitle = card.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackTitle = rawTitle.isEmpty ? "knowledge-card" : rawTitle
+        let safeTitle = fallbackTitle
+            .map { character -> Character in
+                character.isLetter || character.isNumber || character == "-" || character == "_" ? character : "-"
+            }
+            .reduce(into: "") { $0.append($1) }
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-_"))
+        let limitedTitle = String((safeTitle.isEmpty ? "knowledge-card" : safeTitle).prefix(40))
+        return "知识卡片-\(limitedTitle).md"
     }
 
     private func syncLoadingState() {

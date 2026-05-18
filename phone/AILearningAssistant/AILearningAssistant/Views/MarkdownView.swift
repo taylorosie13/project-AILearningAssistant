@@ -97,6 +97,10 @@ private struct WebView: UIViewRepresentable {
         if uiView.renderedContent == content { return }
         uiView.renderedContent = content
         let base64Content = Data(content.utf8).base64EncodedString()
+        let katexDirectoryURL = Self.findKaTeXDirectory()
+        let missingKatexMessage = katexDirectoryURL == nil
+            ? "contentDiv.insertAdjacentHTML('beforeend', '<div style=\"color:#b45309;font-size:12px;margin-top:10px;\">公式渲染资源未找到，请确认 Resources/katex 已加入 App target。</div>');"
+            : ""
         
         let html = """
         <!DOCTYPE html>
@@ -104,29 +108,9 @@ private struct WebView: UIViewRepresentable {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-            <script>
-                window.MathJax = {
-                    tex: { 
-                        inlineMath: [['$', '$'], ['\\\\(', '\\\\)']], 
-                        displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']] 
-                    },
-                    options: {
-                        renderActions: {
-                            addTex: [100, (doc) => {
-                                for (const math of doc.math) {
-                                    if (math.typesetRoot) {
-                                        math.typesetRoot.setAttribute('data-tex', math.math);
-                                        math.typesetRoot.setAttribute('display', math.display ? 'true' : 'false');
-                                    }
-                                }
-                            }, '']
-                        }
-                    },
-
-                };
-            </script>
-            <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" id="MathJax-script"></script>
-            <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+            <link rel="stylesheet" href="katex.min.css">
+            <script defer src="katex.min.js"></script>
+            <script defer src="auto-render.min.js"></script>
             <style>
                 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
                 body {
@@ -136,24 +120,57 @@ private struct WebView: UIViewRepresentable {
                     overflow-x: hidden; text-align: left;
                     -webkit-user-select: text !important; user-select: text !important;
                 }
-                mjx-container { 
-                    display: inline !important;
-                    position: relative;
-                    -webkit-user-select: all !important;
-                    user-select: all !important;
-                    pointer-events: auto !important;
-                }
-                mjx-container[display="true"] {
-                    display: block !important;
-                    margin: 1em 0 !important;
-                }
-                /* 消除内部节点的干扰，确保点击和选择都能击中容器 */
-                mjx-container * {
-                    -webkit-user-select: inherit !important;
-                    user-select: inherit !important;
-                    pointer-events: none !important;
-                }
                 #wrapper { padding: 5px 0 15px 0; width: 100%; position: relative; }
+                h1, h2, h3, h4, h5, h6 {
+                    color: #405940;
+                    line-height: 1.25;
+                    margin: 1em 0 0.45em;
+                }
+                h1 { font-size: 1.45em; }
+                h2 { font-size: 1.28em; }
+                h3 { font-size: 1.15em; }
+                p { margin: 0.55em 0; }
+                ul, ol { padding-left: 1.35em; margin: 0.55em 0; }
+                li { margin: 0.25em 0; }
+                blockquote {
+                    margin: 0.75em 0;
+                    padding: 0.15em 0 0.15em 0.9em;
+                    border-left: 3px solid rgba(64, 89, 64, 0.35);
+                    color: rgba(0, 0, 0, 0.68);
+                }
+                strong { font-weight: 700; color: #1F271F; }
+                em {
+                    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+                    font-size: 1em;
+                    font-style: normal;
+                    font-weight: inherit;
+                    color: inherit;
+                }
+                a { color: #405940; text-decoration: underline; }
+                code {
+                    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+                    font-size: 1em;
+                    font-style: normal;
+                    background-color: rgba(40, 60, 40, 0.055);
+                    border-radius: 5px;
+                    padding: 0.02em 0.16em;
+                }
+                pre {
+                    background-color: #F5F5F5;
+                    padding: 12px;
+                    border-radius: 8px;
+                    overflow-x: auto;
+                    white-space: pre;
+                }
+                pre code {
+                    display: block;
+                    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                    font-size: 0.88em;
+                    padding: 0;
+                    background: transparent;
+                    border-radius: 0;
+                    line-height: 1.45;
+                }
                 .formula-wrapper {
                     position: relative;
                     margin: 1.2em 0;
@@ -163,6 +180,33 @@ private struct WebView: UIViewRepresentable {
                     background: rgba(40, 60, 40, 0.05);
                     border: 1px solid rgba(0,0,0,0.06);
                     overflow-x: auto;
+                }
+                .math-display {
+                    display: block;
+                    min-width: max-content;
+                    padding: 16px;
+                    line-height: 1.55;
+                    -webkit-user-select: text !important;
+                    user-select: text !important;
+                }
+                .math-inline {
+                    display: inline;
+                    font-size: 1em;
+                    padding: 0;
+                    border-radius: 5px;
+                    background: transparent;
+                    -webkit-user-select: text !important;
+                    user-select: text !important;
+                }
+                .katex {
+                    font-size: 1em !important;
+                    line-height: 1.25;
+                }
+                .katex-display {
+                    margin: 0 !important;
+                    padding: 14px !important;
+                    overflow-x: auto;
+                    overflow-y: hidden;
                 }
                 .formula-wrapper.is-scrollable::after {
                     content: "›";
@@ -181,11 +225,6 @@ private struct WebView: UIViewRepresentable {
                     font-size: 20px;
                     border-radius: 0 12px 12px 0;
                 }
-                mjx-container[display="true"] {
-                    margin: 0 !important; padding: 16px !important;
-                    display: block !important; max-width: 100% !important;
-                }
-                pre { background-color: #F5F5F5; padding: 12px; border-radius: 8px; overflow-x: auto; }
             </style>
         </head>
         <body>
@@ -201,100 +240,30 @@ private struct WebView: UIViewRepresentable {
                     }
                 }
 
-        function getLaTeXSelection() {
-            const sel = window.getSelection();
-            if (!sel || !sel.rangeCount) return "";
+                function getLaTeXSelection() {
+                    const sel = window.getSelection();
+                    if (!sel || !sel.rangeCount) return "";
 
-            const range = sel.getRangeAt(0);
-            const container = document.createElement("div");
+                    const range = sel.getRangeAt(0);
+                    const container = document.createElement("div");
+                    container.appendChild(range.cloneContents());
 
-            // 1. 克隆选区基础内容
-            container.appendChild(range.cloneContents());
+                    Array.from(container.querySelectorAll("[data-tex]")).forEach(node => {
+                        const tex = node.getAttribute("data-tex") || node.textContent || "";
+                        const isBlock = node.getAttribute("data-display") === "true";
+                        node.replaceWith(document.createTextNode((isBlock ? "\\n$$" : "$") + tex + (isBlock ? "$$\\n" : "$")));
+                    });
 
-            // 2. 找到真实 DOM 中选区覆盖的公式
-        const allMjx = Array.from(document.querySelectorAll("mjx-container"));
+                    container.style.position = "fixed";
+                    container.style.left = "-9999px";
+                    container.style.width = "1000px";
+                    container.style.whiteSpace = "pre-wrap";
+                    document.body.appendChild(container);
+                    const result = container.innerText;
+                    document.body.removeChild(container);
 
-        const intersectingMjx = allMjx.filter(mjx => {
-            try {
-                const rect = mjx.getBoundingClientRect();
-                const rangeRects = Array.from(range.getClientRects());
-
-                return rangeRects.some(r =>
-                    !(r.right < rect.left ||
-                      r.left > rect.right ||
-                      r.bottom < rect.top ||
-                      r.top > rect.bottom)
-                );
-            } catch {
-                return false;
-            }
-        });
-
-        intersectingMjx.forEach(mjx => {
-
-            const tex = mjx.getAttribute("data-tex");
-            if (!tex) return;
-
-            const isBlock = mjx.getAttribute("display") === "true";
-
-            const replacement = document.createTextNode(
-                (isBlock ? "\\n$$" : "$") +
-                tex +
-                (isBlock ? "$$\\n" : "$")
-            );
-
-            // 查找 clone 结果中最接近的位置
-            const walker = document.createTreeWalker(
-                container,
-                NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
-            );
-
-            let inserted = false;
-
-            while (walker.nextNode()) {
-
-                const node = walker.currentNode;
-
-                if (
-                    node.textContent &&
-                    mjx.textContent &&
-                    node.textContent.includes(mjx.textContent.trim())
-                ) {
-
-                    node.parentNode.insertBefore(replacement, node);
-
-                    inserted = true;
-
-                    break;
+                    return result.trim();
                 }
-            }
-
-            // 如果没找到合理位置才 fallback
-            if (!inserted) {
-                container.appendChild(replacement);
-            }
-        });
-
-            // 4. 处理可能残留在 container 中的 MathJax 渲染碎片
-            Array.from(container.querySelectorAll("*")).reverse().forEach(node => {
-                const isMjx = node.tagName.toLowerCase().startsWith("mjx-") || 
-                             (node.className && typeof node.className === "string" && node.className.includes("mjx-"));
-                if (isMjx) {
-                    if (node.parentNode) node.parentNode.removeChild(node);
-                }
-            });
-
-            // 5. 转换为文本
-            container.style.position = "fixed";
-            container.style.left = "-9999px";
-            container.style.width = "1000px";
-            container.style.whiteSpace = "pre-wrap";
-            document.body.appendChild(container);
-            const result = container.innerText;
-            document.body.removeChild(container);
-
-            return result.trim();
-        }
 
                 document.addEventListener('selectionchange', () => {
                     const text = getLaTeXSelection();
@@ -313,90 +282,231 @@ private struct WebView: UIViewRepresentable {
                     });
                 }
 
-                function doRender() {
-                    if (window.MathJax && window.MathJax.typesetPromise) {
-                        window.MathJax.typesetClear(); 
-                        window.MathJax.typesetPromise([contentDiv]).then(() => {
-                            document.querySelectorAll('mjx-container').forEach(mjx => {
-                                // 处理块级公式的滚动和卡片包装
-                                if(mjx.getAttribute('display') === 'true') {
-                                    if(mjx.parentNode.className !== 'formula-card') {
-                                        const outerWrapper = document.createElement('div');
-                                        outerWrapper.className = 'formula-wrapper';
-                                        
-                                        const innerCard = document.createElement('div');
-                                        innerCard.className = 'formula-card';
-                                        
-                                        mjx.parentNode.insertBefore(outerWrapper, mjx);
-                                        outerWrapper.appendChild(innerCard);
-                                        innerCard.appendChild(mjx);
-                                        
-                                        innerCard.addEventListener('scroll', () => {
-                                            if (innerCard.scrollLeft > 5) {
-                                                outerWrapper.classList.remove('is-scrollable');
-                                            } else {
-                                                outerWrapper.classList.add('is-scrollable');
-                                            }
-                                        });
-                                    }
-                                }
-                            });
-                            updateScrollIndicators();
-                            reportHeight();
-                        }).catch(err => {
-                            console.log(err);
-                            contentDiv.innerHTML += `<div style="color:red;font-size:12px;">MathJax Error: ${err.message}</div>`;
+                function renderMathAndMeasure() {
+                    const finish = () => {
+                        updateScrollIndicators();
+                        reportHeight();
+                    };
+
+                    if (window.katex) {
+                        document.querySelectorAll("[data-tex]").forEach(node => {
+                            try {
+                                window.katex.render(node.getAttribute("data-tex") || "", node, {
+                                    displayMode: node.getAttribute("data-display") === "true",
+                                    throwOnError: false
+                                });
+                            } catch (error) {
+                                console.log("KaTeX node render error:", error);
+                            }
                         });
+                        requestAnimationFrame(finish);
+                        return;
                     }
+
+                    if (window.renderMathInElement) {
+                        try {
+                            renderMathInElement(contentDiv, {
+                                delimiters: [
+                                    {left: "$$", right: "$$", display: true},
+                                    {left: "\\\\[", right: "\\\\]", display: true},
+                                    {left: "\\\\(", right: "\\\\)", display: false},
+                                    {left: "$", right: "$", display: false}
+                                ],
+                                throwOnError: false,
+                                ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"],
+                                ignoredClasses: ["no-math"]
+                            });
+                        } catch (error) {
+                            console.log("KaTeX render error:", error);
+                        }
+                        requestAnimationFrame(finish);
+                        return;
+                    }
+
+                    contentDiv.insertAdjacentHTML('beforeend', '<div style="color:#b45309;font-size:12px;margin-top:10px;">公式渲染引擎没有加载成功。</div>');
+                    finish();
                 }
 
-                function tryRender(attempts) {
-                    if (window.MathJax && window.MathJax.typesetPromise) {
-                        doRender();
-                    } else if (attempts > 0) {
-                        setTimeout(() => tryRender(attempts - 1), 200);
-                    } else {
-                        contentDiv.innerHTML += `<div style="color:orange;font-size:12px;margin-top:10px;">[提示] 公式渲染引擎加载超时，请检查网络。</div>`;
-                        reportHeight();
+                function escapeHTML(value) {
+                    return String(value)
+                        .replace(/&/g, "&amp;")
+                        .replace(/</g, "&lt;")
+                        .replace(/>/g, "&gt;")
+                        .replace(/"/g, "&quot;")
+                        .replace(/'/g, "&#39;");
+                }
+
+                function mathHTML(tex, display) {
+                    const escapedTex = escapeHTML(tex.trim());
+                    if (display) {
+                        return `<div class="formula-wrapper"><div class="formula-card"><span class="math-display" data-tex="${escapedTex}" data-display="true">\\\\[${escapedTex}\\\\]</span></div></div>`;
                     }
+                    return `<span class="math-inline" data-tex="${escapedTex}" data-display="false">\\\\(${escapedTex}\\\\)</span>`;
+                }
+
+                function renderInline(text, renderMath = true) {
+                    if (!renderMath) {
+                        return escapeHTML(text)
+                            .replace(/`([^`]+?)`/g, "<code>$1</code>")
+                            .replace(/\\*\\*([^*]+?)\\*\\*/g, "<strong>$1</strong>")
+                            .replace(/__([^_]+?)__/g, "<strong>$1</strong>")
+                            .replace(/(^|[^*])\\*([^*\\n]+?)\\*(?!\\*)/g, "$1<em>$2</em>")
+                            .replace(/(^|[^_])_([^_\\n]+?)_(?!_)/g, "$1<em>$2</em>")
+                            .replace(/\\[([^\\]]+?)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, '<a href="$2">$1</a>');
+                    }
+
+                    const mathBlocks = [];
+                    let safeText = text
+                        .replace(/\\$\\$([\\s\\S]+?)\\$\\$/g, (_, tex) => {
+                            mathBlocks.push(mathHTML(tex, true));
+                            return `\\u0000MATH${mathBlocks.length - 1}\\u0000`;
+                        })
+                        .replace(/\\\\\\[([\\s\\S]+?)\\\\\\]/g, (_, tex) => {
+                            mathBlocks.push(mathHTML(tex, true));
+                            return `\\u0000MATH${mathBlocks.length - 1}\\u0000`;
+                        })
+                        .replace(/\\\\\\(([\\s\\S]+?)\\\\\\)/g, (_, tex) => {
+                            mathBlocks.push(mathHTML(tex, false));
+                            return `\\u0000MATH${mathBlocks.length - 1}\\u0000`;
+                        })
+                        .replace(/\\\\\\$([^$\\n]+?)\\\\\\$/g, (_, tex) => {
+                            mathBlocks.push(mathHTML(tex, false));
+                            return `\\u0000MATH${mathBlocks.length - 1}\\u0000`;
+                        })
+                        .replace(/\\$([^$\\n]+?)\\$/g, (_, tex) => {
+                            mathBlocks.push(mathHTML(tex, false));
+                            return `\\u0000MATH${mathBlocks.length - 1}\\u0000`;
+                        });
+
+                    let html = escapeHTML(safeText)
+                        .replace(/`([^`]+?)`/g, "<code>$1</code>")
+                        .replace(/\\*\\*([^*]+?)\\*\\*/g, "<strong>$1</strong>")
+                        .replace(/__([^_]+?)__/g, "<strong>$1</strong>")
+                        .replace(/(^|[^*])\\*([^*\\n]+?)\\*(?!\\*)/g, "$1<em>$2</em>")
+                        .replace(/(^|[^_])_([^_\\n]+?)_(?!_)/g, "$1<em>$2</em>")
+                        .replace(/\\[([^\\]]+?)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, '<a href="$2">$1</a>');
+
+                    mathBlocks.forEach((math, index) => {
+                        html = html.replace(new RegExp(`\\\\u0000MATH${index}\\\\u0000`, "g"), math);
+                    });
+                    return html;
+                }
+
+                function renderParagraph(lines) {
+                    if (!lines.length) return "";
+                    return `<p>${renderInline(lines.join("\\n")).replace(/\\n/g, "<br>")}</p>`;
+                }
+
+                function renderMarkdown(markdown) {
+                    const lines = markdown.replace(/\\r\\n/g, "\\n").replace(/\\r/g, "\\n").split("\\n");
+                    let html = "";
+                    let paragraph = [];
+                    let listType = null;
+                    let inCode = false;
+                    let codeLines = [];
+
+                    function flushParagraph() {
+                        html += renderParagraph(paragraph);
+                        paragraph = [];
+                    }
+
+                    function closeList() {
+                        if (listType) {
+                            html += `</${listType}>`;
+                            listType = null;
+                        }
+                    }
+
+                    for (const line of lines) {
+                        const trimmed = line.trim();
+
+                        if (trimmed.startsWith("```")) {
+                            if (inCode) {
+                                html += `<pre><code>${escapeHTML(codeLines.join("\\n"))}</code></pre>`;
+                                codeLines = [];
+                                inCode = false;
+                            } else {
+                                flushParagraph();
+                                closeList();
+                                inCode = true;
+                            }
+                            continue;
+                        }
+
+                        if (inCode) {
+                            codeLines.push(line);
+                            continue;
+                        }
+
+                        if (!trimmed) {
+                            flushParagraph();
+                            closeList();
+                            continue;
+                        }
+
+                        const heading = trimmed.match(/^(#{1,6})\\s+(.+)$/);
+                        if (heading) {
+                            flushParagraph();
+                            closeList();
+                            const level = heading[1].length;
+                            html += `<h${level}>${renderInline(heading[2])}</h${level}>`;
+                            continue;
+                        }
+
+                        const quote = trimmed.match(/^>\\s?(.+)$/);
+                        if (quote) {
+                            flushParagraph();
+                            closeList();
+                            html += `<blockquote>${renderInline(quote[1])}</blockquote>`;
+                            continue;
+                        }
+
+                        const unordered = trimmed.match(/^[-*+]\\s+(.+)$/);
+                        if (unordered) {
+                            flushParagraph();
+                            if (listType !== "ul") {
+                                closeList();
+                                html += "<ul>";
+                                listType = "ul";
+                            }
+                            html += `<li>${renderInline(unordered[1])}</li>`;
+                            continue;
+                        }
+
+                        const ordered = trimmed.match(/^\\d+[.)]\\s+(.+)$/);
+                        if (ordered) {
+                            flushParagraph();
+                            if (listType !== "ol") {
+                                closeList();
+                                html += "<ol>";
+                                listType = "ol";
+                            }
+                            html += `<li>${renderInline(ordered[1])}</li>`;
+                            continue;
+                        }
+
+                        closeList();
+                        paragraph.push(line);
+                    }
+
+                    if (inCode) {
+                        html += `<pre><code>${escapeHTML(codeLines.join("\\n"))}</code></pre>`;
+                    }
+                    flushParagraph();
+                    closeList();
+                    return html;
                 }
 
                 try {
                     const raw = decodeURIComponent(escape(window.atob("\(base64Content)")));
-                    
-                    // 1. 提取公式并替换为绝对安全的占位符 (防止 marked 干扰)
-                    const mathBlocks = [];
-                    let placeholderText = raw.replace(/\\$\\$([\\s\\S]+?)\\$\\$/g, (match) => {
-                        mathBlocks.push(match);
-                        return " TQAMATHBLOCK " + (mathBlocks.length - 1) + " ";
-                    });
-                    placeholderText = placeholderText.replace(/\\\\\\[([\\s\\S]+?)\\\\\\]/g, (match) => {
-                        mathBlocks.push(match);
-                        return " TQAMATHBLOCK " + (mathBlocks.length - 1) + " ";
-                    });
-                    placeholderText = placeholderText.replace(/\\\\\\(([\\s\\S]+?)\\\\\\)/g, (match) => {
-                        mathBlocks.push(match);
-                        return " TQAMATHBLOCK " + (mathBlocks.length - 1) + " ";
-                    });
-                    placeholderText = placeholderText.replace(/\\$([^$]+?)\\$/g, (match) => {
-                        mathBlocks.push(match);
-                        return " TQAMATHBLOCK " + (mathBlocks.length - 1) + " ";
-                    });
-
-                    // 2. 执行 Markdown 解析
-                    let htmlResult = marked.parse(placeholderText);
-
-                    // 3. 精准还原公式原文 (修复可能存在 HTML 解析安全问题)
-                    mathBlocks.forEach((math, index) => {
-                        let regex = new RegExp(`\\\\s*TQAMATHBLOCK\\\\s+${index}\\\\b\\\\s*`, "g");
-                        htmlResult = htmlResult.replace(regex, () => math);
-                    });
-
-                    contentDiv.innerHTML = htmlResult;
+                    contentDiv.innerHTML = renderMarkdown(raw);
                     new ResizeObserver(reportHeight).observe(wrapperDiv);
-                    
-                    // 4. 开始轮询渲染 (尝试 50 次，即 10 秒)
-                    tryRender(50);
+                    if (document.readyState === "loading") {
+                        document.addEventListener("DOMContentLoaded", renderMathAndMeasure);
+                    } else {
+                        renderMathAndMeasure();
+                    }
+                    \(missingKatexMessage)
                 } catch (e) { 
                     contentDiv.innerHTML = `<span style="color:red;">Error: ${e.message}</span>`; 
                     reportHeight();
@@ -405,7 +515,31 @@ private struct WebView: UIViewRepresentable {
         </body>
         </html>
         """
-        uiView.loadHTMLString(html, baseURL: nil)
+        uiView.loadHTMLString(html, baseURL: katexDirectoryURL)
+    }
+
+    private static func findKaTeXDirectory() -> URL? {
+        let subdirectories: [String?] = ["Resources/katex", "katex", nil]
+
+        for subdirectory in subdirectories {
+            if let url = Bundle.main.url(forResource: "katex.min", withExtension: "js", subdirectory: subdirectory) {
+                return url.deletingLastPathComponent()
+            }
+        }
+
+        let fallbackDirectories = [
+            "Resources/katex",
+            "katex"
+        ]
+        for directory in fallbackDirectories {
+            let url = Bundle.main.bundleURL
+                .appendingPathComponent(directory)
+                .appendingPathComponent("katex.min.js")
+            if FileManager.default.fileExists(atPath: url.path) {
+                return url.deletingLastPathComponent()
+            }
+        }
+        return nil
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }

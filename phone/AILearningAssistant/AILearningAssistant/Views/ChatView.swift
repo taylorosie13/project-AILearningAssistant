@@ -383,7 +383,20 @@ struct SidebarView: View {
     @ObservedObject var viewModel: ChatViewModel
     @ObservedObject var noteViewModel: NoteViewModel
     @ObservedObject var voiceCaptureStore: VoiceCaptureStore
+    @State private var sessionSearchText = ""
+    @FocusState private var isSessionSearchFocused: Bool
     let screenWidth: CGFloat
+
+    private var filteredSessions: [ChatSession] {
+        let keyword = sessionSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !keyword.isEmpty else { return viewModel.sessions }
+
+        return viewModel.sessions.filter { session in
+            (session.preview ?? "新会话").localizedCaseInsensitiveContains(keyword)
+                || session.created_at.localizedCaseInsensitiveContains(keyword)
+                || session.id.localizedCaseInsensitiveContains(keyword)
+        }
+    }
     
     var body: some View {
         HStack(spacing: 0) {
@@ -397,7 +410,7 @@ struct SidebarView: View {
                             .frame(width: 32, height: 32)
                             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         Spacer()
-                        Button(action: { withAnimation { showSidebar = false } }) {
+                        Button(action: closeSidebar) {
                             Image(systemName: "xmark")
                                 .foregroundColor(.gray)
                         }
@@ -439,7 +452,16 @@ struct SidebarView: View {
                         .buttonStyle(PlainButtonStyle())
 
                         // 知识卡片盒入口
-                        NavigationLink(destination: KnowledgeCardView(viewModel: viewModel, noteViewModel: noteViewModel)) {
+                        NavigationLink(
+                            destination: KnowledgeCardView(
+                                viewModel: viewModel,
+                                noteViewModel: noteViewModel,
+                                onAskAI: { card in
+                                    viewModel.startNewChat(with: card)
+                                    closeSidebar()
+                                }
+                            )
+                        ) {
                             HStack {
                                 Image(systemName: "archivebox.fill")
                                     .foregroundColor(AppTheme.accent)
@@ -491,6 +513,34 @@ struct SidebarView: View {
                             .foregroundColor(.gray)
                             .padding(.horizontal, 20)
                             .padding(.bottom, 4)
+
+                        HStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.gray)
+
+                            TextField("搜索会话", text: $sessionSearchText)
+                                .font(.system(size: 14))
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .submitLabel(.search)
+                                .focused($isSessionSearchFocused)
+
+                            if !sessionSearchText.isEmpty {
+                                Button(action: { sessionSearchText = "" }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 14))
+                                        .foregroundColor(.gray.opacity(0.75))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(Color.white.opacity(0.55))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal, 15)
+                        .padding(.bottom, 8)
                         
                         // 会话列表
                         if viewModel.sessions.isEmpty {
@@ -499,8 +549,14 @@ struct SidebarView: View {
                                 .foregroundColor(.gray.opacity(0.6))
                                 .padding(.horizontal, 20)
                                 .padding(.top, 10)
+                        } else if filteredSessions.isEmpty {
+                            Text("没有找到相关会话")
+                                .font(.caption2)
+                                .foregroundColor(.gray.opacity(0.65))
+                                .padding(.horizontal, 20)
+                                .padding(.top, 10)
                         } else {
-                            ForEach(viewModel.sessions) { session in
+                            ForEach(filteredSessions) { session in
                                 // 使用 VStack + onTapGesture 替代 Button 解决 ContextMenu 动画冲突
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text(session.preview ?? "新会话")
@@ -517,7 +573,7 @@ struct SidebarView: View {
                                 }
                                 .padding(14)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                // 使用实色背景 (不透明) 解决 ContextMenu 预览时的白色块问题
+                                // 使用实色背景解决 ContextMenu 预览时的白色块问题
                                 .background(
                                     viewModel.currentSessionId == session.id ? 
                                     AppTheme.userBubble : // 选中时使用淡绿色
@@ -531,10 +587,9 @@ struct SidebarView: View {
                                 .padding(.horizontal, 15)
                                 .contentShape(Rectangle()) // 确保整行可点击
                                 .onTapGesture {
+                                    isSessionSearchFocused = false
                                     viewModel.selectSession(session)
-                                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                                        showSidebar = false
-                                    }
+                                    closeSidebar()
                                 }
                                 .contextMenu {
                                     Button(role: .destructive) {
@@ -558,7 +613,7 @@ struct SidebarView: View {
                     Text("知芽")
                         .font(.footnote)
                     Spacer()
-                    Text("Beta v0.2")
+                    Text("Beta v0.4")
                         .font(.caption2)
                         .foregroundColor(.gray)
                 }
@@ -571,9 +626,21 @@ struct SidebarView: View {
             
             Spacer()
         }
+        .onChange(of: showSidebar) { _, isVisible in
+            if !isVisible {
+                isSessionSearchFocused = false
+            }
+        }
         .task(id: showSidebar) {
             guard showSidebar else { return }
             voiceCaptureStore.ensureLoaded()
+        }
+    }
+
+    private func closeSidebar() {
+        isSessionSearchFocused = false
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+            showSidebar = false
         }
     }
 }
@@ -754,9 +821,20 @@ struct StreamingResponseText: View {
 
 struct MessageAttachmentList: View {
     let filePaths: [String]
+    @State private var previewImageIndex: Int?
 
     private var attachments: [MessageAttachment] {
         filePaths.map(MessageAttachment.from(filePath:))
+    }
+
+    private var imageAttachments: [MessageAttachment] {
+        attachments.filter { $0.fileKind == .image }
+    }
+
+    private var imageURLs: [URL] {
+        imageAttachments.compactMap { attachment in
+            URL(string: "\(NetworkManager.shared.baseURL)/\(attachment.filePath)")
+        }
     }
 
     var body: some View {
@@ -766,10 +844,15 @@ struct MessageAttachmentList: View {
                     let imageUrl = "\(NetworkManager.shared.baseURL)/\(attachment.filePath)"
                     AsyncImage(url: URL(string: imageUrl)) { phase in
                         if let image = phase.image {
-                            image.resizable()
-                                .scaledToFit()
-                                .cornerRadius(12)
-                                .shadow(color: AppTheme.shadow, radius: 5, x: 0, y: 2)
+                            Button {
+                                previewImageIndex = imageAttachments.firstIndex(where: { $0.id == attachment.id }) ?? 0
+                            } label: {
+                                image.resizable()
+                                    .scaledToFit()
+                                    .cornerRadius(12)
+                                    .shadow(color: AppTheme.shadow, radius: 5, x: 0, y: 2)
+                            }
+                            .buttonStyle(.plain)
                         } else {
                             RoundedRectangle(cornerRadius: 12)
                                 .fill(Color.gray.opacity(0.1))
@@ -785,6 +868,160 @@ struct MessageAttachmentList: View {
                     )
                 }
             }
+        }
+        .fullScreenCover(
+            isPresented: Binding(
+                get: { previewImageIndex != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        previewImageIndex = nil
+                    }
+                }
+            )
+        ) {
+            if let previewImageIndex {
+                FullScreenImagePreview(
+                    imageURLs: imageURLs,
+                    initialIndex: previewImageIndex
+                )
+            }
+        }
+    }
+}
+
+struct FullScreenImagePreview: View {
+    let imageURLs: [URL]
+    let initialIndex: Int
+    @Environment(\.dismiss) private var dismiss
+    @State private var currentIndex: Int
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+
+    init(imageURLs: [URL], initialIndex: Int) {
+        self.imageURLs = imageURLs
+        self.initialIndex = initialIndex
+        _currentIndex = State(initialValue: min(max(initialIndex, 0), max(imageURLs.count - 1, 0)))
+    }
+
+    private var currentImageURL: URL? {
+        guard imageURLs.indices.contains(currentIndex) else { return nil }
+        return imageURLs[currentIndex]
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            GeometryReader { proxy in
+                ZStack {
+                    if let currentImageURL {
+                        AsyncImage(url: currentImageURL) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
+                                    .scaleEffect(scale)
+                                    .gesture(
+                                        MagnificationGesture()
+                                            .onChanged { value in
+                                                scale = min(max(lastScale * value, 1), 4)
+                                            }
+                                            .onEnded { _ in
+                                                lastScale = scale
+                                            }
+                                    )
+                                    .onTapGesture(count: 2) {
+                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                            scale = scale > 1 ? 1 : 2
+                                            lastScale = scale
+                                        }
+                                    }
+                            case .failure:
+                                Text("图片加载失败")
+                                    .foregroundColor(.white.opacity(0.85))
+                            default:
+                                ProgressView()
+                                    .tint(.white)
+                            }
+                        }
+                    } else {
+                        Text("图片加载失败")
+                            .foregroundColor(.white.opacity(0.85))
+                    }
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
+            }
+            .ignoresSafeArea()
+
+            VStack {
+                HStack {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 38, height: 38)
+                            .background(Color.black.opacity(0.65))
+                            .clipShape(Circle())
+                            .overlay(Circle().stroke(Color.white.opacity(0.22), lineWidth: 1))
+                    }
+
+                    Spacer()
+
+                    Text("图片 \(currentIndex + 1) / \(max(imageURLs.count, 1))")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.55))
+                        .clipShape(Capsule())
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 18)
+
+                Spacer()
+            }
+
+            if imageURLs.count > 1 {
+                HStack {
+                    previewNavigationButton(systemImage: "chevron.left") {
+                        movePreview(by: -1)
+                    }
+                    .disabled(currentIndex == 0)
+                    .opacity(currentIndex == 0 ? 0.25 : 1)
+
+                    Spacer()
+
+                    previewNavigationButton(systemImage: "chevron.right") {
+                        movePreview(by: 1)
+                    }
+                    .disabled(currentIndex >= imageURLs.count - 1)
+                    .opacity(currentIndex >= imageURLs.count - 1 ? 0.25 : 1)
+                }
+                .padding(.horizontal, 16)
+            }
+        }
+    }
+
+    private func previewNavigationButton(systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.white)
+                .frame(width: 42, height: 42)
+                .background(Color.black.opacity(0.5))
+                .clipShape(Circle())
+        }
+    }
+
+    private func movePreview(by offset: Int) {
+        let nextIndex = currentIndex + offset
+        guard imageURLs.indices.contains(nextIndex) else { return }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            currentIndex = nextIndex
+            scale = 1
+            lastScale = 1
         }
     }
 }
@@ -1098,7 +1335,7 @@ struct SelectedAttachmentCard: View {
             } else {
                 AttachmentCard(
                     title: attachment.displayName,
-                    subtitle: attachment.fileKind.displayName,
+                    subtitle: attachment.requiresUserQuestion ? "知识卡片" : attachment.fileKind.displayName,
                     systemImageName: attachment.fileKind.systemImageName,
                     compact: true,
                     transferState: attachment.transferState,

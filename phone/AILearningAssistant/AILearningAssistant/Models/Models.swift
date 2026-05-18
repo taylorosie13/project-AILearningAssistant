@@ -84,6 +84,7 @@ struct LocalAttachment: Identifiable, Equatable {
     var uploadedPath: String?
     var transferState: AttachmentTransferState
     var uploadProgress: Double
+    var requiresUserQuestion: Bool
 
     init(
         id: UUID = UUID(),
@@ -95,7 +96,8 @@ struct LocalAttachment: Identifiable, Equatable {
         previewImage: UIImage? = nil,
         uploadedPath: String? = nil,
         transferState: AttachmentTransferState = .idle,
-        uploadProgress: Double = 0
+        uploadProgress: Double = 0,
+        requiresUserQuestion: Bool = false
     ) {
         self.id = id
         self.displayName = displayName
@@ -107,6 +109,7 @@ struct LocalAttachment: Identifiable, Equatable {
         self.uploadedPath = uploadedPath
         self.transferState = transferState
         self.uploadProgress = uploadProgress
+        self.requiresUserQuestion = requiresUserQuestion
     }
 
     static func == (lhs: LocalAttachment, rhs: LocalAttachment) -> Bool {
@@ -114,7 +117,7 @@ struct LocalAttachment: Identifiable, Equatable {
     }
 
     var renderIdentity: String {
-        "\(id.uuidString)-\(transferState.displayText)-\(Int(uploadProgress * 100))-\(uploadedPath ?? "")"
+        "\(id.uuidString)-\(transferState.displayText)-\(Int(uploadProgress * 100))-\(uploadedPath ?? "")-\(requiresUserQuestion)"
     }
 
     var requiresServerDocumentPreparation: Bool {
