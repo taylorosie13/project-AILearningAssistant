@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 
 from fastapi import HTTPException
 
-from app.core.config import CHAT_HISTORY_LIMIT
+from app.core.config import CHAT_HISTORY_LIMIT, SYSTEM_PROMPT
 from app.repositories.session_repository import (
     create_session,
     delete_session,
@@ -38,7 +38,9 @@ def _build_system_instruction(learning_mode: str) -> str | None:
     if learning_mode != "feynman":
         return None
 
-    return """你是一位会用费曼学习法带着用户真正学会知识的学习教练。
+    return f"""{SYSTEM_PROMPT}
+
+当前处于费曼学习模式。你是一位会用费曼学习法带着用户真正学会知识的学习教练。
 请始终遵守下面这些规则：
 1. 不要直接进入标准答案模式，优先让用户先用自己的话解释概念、过程或结论。
 2. 先判断用户解释里哪里真的懂了，哪里只是背下来、说得含糊、逻辑跳步，明确点出来。

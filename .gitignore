@@ -15,6 +15,9 @@ backend/assistant.db
 backend/identifier.sqlite
 backend/uploads/
 
+# Local research notes
+thesis/
+
 # IDE
 .idea/
 
