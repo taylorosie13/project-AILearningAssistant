@@ -4,17 +4,20 @@ struct NoteDetailView: View {
     let note: Note
     @ObservedObject var noteViewModel: NoteViewModel
     @ObservedObject var chatViewModel: ChatViewModel
+    let onAskAI: (Note) -> Void
 
     @State private var currentNote: Note
     @State private var editingDraft: NoteDraft?
     @State private var showingSourceInfo = false
-    @State private var showingAskAISheet = false
     @State private var showingFullScreenContent = false
+    @State private var isConfirmingCardExtraction = false
+    @Environment(\.dismiss) private var dismiss
 
-    init(note: Note, noteViewModel: NoteViewModel, chatViewModel: ChatViewModel) {
+    init(note: Note, noteViewModel: NoteViewModel, chatViewModel: ChatViewModel, onAskAI: @escaping (Note) -> Void) {
         self.note = note
         self.noteViewModel = noteViewModel
         self.chatViewModel = chatViewModel
+        self.onAskAI = onAskAI
         _currentNote = State(initialValue: note)
     }
 
@@ -57,7 +60,7 @@ struct NoteDetailView: View {
                 .noteDetailCardStyle()
 
                 VStack(spacing: 12) {
-                    Button(action: { showingAskAISheet = true }) {
+                    Button(action: askAIInChat) {
                         Label("向 AI 提问", systemImage: "sparkles")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundColor(.white)
@@ -78,7 +81,7 @@ struct NoteDetailView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 16))
                         }
 
-                        Button(action: extractKnowledgeCard) {
+                        Button(action: { isConfirmingCardExtraction = true }) {
                             Label("提炼卡片", systemImage: "archivebox")
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundColor(.white)
@@ -122,15 +125,13 @@ struct NoteDetailView: View {
         } message: {
             Text(currentNote.sourceDescription)
         }
-        .sheet(isPresented: $showingAskAISheet) {
-            ContextQuestionSheet(
-                title: "笔记提问",
-                placeholder: "比如：这份笔记的核心观点是什么？有没有容易忽略的重点？",
-                chatViewModel: chatViewModel,
-                askAction: { question in
-                    try await chatViewModel.askAIAboutNote(currentNote, question: question)
-                }
-            )
+        .alert("提炼成卡片？", isPresented: $isConfirmingCardExtraction) {
+            Button("取消", role: .cancel) {}
+            Button("开始提炼") {
+                extractKnowledgeCard()
+            }
+        } message: {
+            Text("会根据这篇笔记生成知识卡片。")
         }
         .fullScreenCover(isPresented: $showingFullScreenContent) {
             FullScreenNoteContentView(
@@ -182,6 +183,11 @@ struct NoteDetailView: View {
             await noteViewModel.extractCard(from: currentNote)
             await chatViewModel.loadKnowledgeCards()
         }
+    }
+
+    private func askAIInChat() {
+        onAskAI(currentNote)
+        dismiss()
     }
 }
 

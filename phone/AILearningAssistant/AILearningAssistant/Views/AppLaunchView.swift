@@ -60,7 +60,7 @@ final class LaunchPermissionViewModel: ObservableObject {
         .init(id: "localNetwork", title: "本地网络", detail: "连接你电脑上运行的后端服务时会用到。", state: .idle),
     ]
     @Published private(set) var isRequesting = false
-    @Published var hintText: String = "建议第一次启动时把这些权限都确认完，后面使用会顺很多。"
+    @Published var hintText: String = "建议第一次启动时把这些权限都确认完。"
 
     func requestAllPermissions() {
         guard !isRequesting else { return }
@@ -79,9 +79,9 @@ final class LaunchPermissionViewModel: ObservableObject {
             isRequesting = false
 
             if items.allSatisfy({ $0.state == .granted || $0.state == .unavailable }) {
-                hintText = "权限已经准备好了，可以进入 App 了。"
+                hintText = "权限已经准备好了，可以进入App了。"
             } else {
-                hintText = "有些权限还没打开，App 也能进，但部分功能会受影响。"
+                hintText = "有些权限还没打开，部分功能受限。"
             }
         }
     }

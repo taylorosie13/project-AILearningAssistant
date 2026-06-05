@@ -26,12 +26,20 @@ def init_db() -> None:
                 session_id TEXT,
                 role TEXT,
                 content TEXT,
+                display_content TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 file_paths TEXT,
                 FOREIGN KEY (session_id) REFERENCES sessions (session_id)
             )
             """
         )
+
+        message_columns = {
+            row["name"]
+            for row in cursor.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        if "display_content" not in message_columns:
+            cursor.execute("ALTER TABLE messages ADD COLUMN display_content TEXT")
 
         cursor.execute(
             """

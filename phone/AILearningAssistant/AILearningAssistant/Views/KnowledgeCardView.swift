@@ -220,6 +220,7 @@ struct CardRow: View {
     @ObservedObject var noteViewModel: NoteViewModel
     let onAskAI: (KnowledgeCard) -> Void
     @State private var isExpanded = false
+    @State private var isConfirmingNoteExpansion = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -287,9 +288,7 @@ struct CardRow: View {
                         .background(AppTheme.userBubble)
                         .cornerRadius(20)
                 }
-                Button(action: {
-                    Task { _ = await noteViewModel.expandCardToNote(card: card) }
-                }) {
+                Button(action: { isConfirmingNoteExpansion = true }) {
                     Image(systemName: "book.closed")
                         .font(.caption)
                         .foregroundColor(.white)
@@ -324,6 +323,14 @@ struct CardRow: View {
         .background(Color.white)
         .cornerRadius(16)
         .shadow(color: AppTheme.shadow, radius: 4, x: 0, y: 2)
+        .alert("整理成笔记？", isPresented: $isConfirmingNoteExpansion) {
+            Button("取消", role: .cancel) {}
+            Button("开始整理") {
+                Task { _ = await noteViewModel.expandCardToNote(card: card) }
+            }
+        } message: {
+            Text("会把这张知识卡片扩展成一篇新笔记。")
+        }
     }
 }
 

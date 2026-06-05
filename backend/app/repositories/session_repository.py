@@ -22,12 +22,18 @@ def session_exists(session_id: str) -> bool:
     return row is not None
 
 
-def save_message(session_id: str, role: str, content: str, file_paths: list[str] | None = None) -> None:
+def save_message(
+    session_id: str,
+    role: str,
+    content: str,
+    file_paths: list[str] | None = None,
+    display_content: str | None = None,
+) -> None:
     serialized_paths = json.dumps(file_paths) if file_paths else None
     with get_db_connection() as conn:
         conn.execute(
-            "INSERT INTO messages (session_id, role, content, file_paths) VALUES (?, ?, ?, ?)",
-            (session_id, role, content, serialized_paths),
+            "INSERT INTO messages (session_id, role, content, file_paths, display_content) VALUES (?, ?, ?, ?, ?)",
+            (session_id, role, content, serialized_paths, display_content),
         )
         conn.commit()
 
@@ -52,7 +58,12 @@ def fetch_recent_messages(session_id: str, limit: int) -> list[dict[str, Any]]:
 def fetch_all_session_messages(session_id: str) -> list[dict[str, Any]]:
     with get_db_connection() as conn:
         rows = conn.execute(
-            "SELECT role, content, created_at, file_paths FROM messages WHERE session_id = ? ORDER BY id ASC",
+            """
+            SELECT role, content, COALESCE(display_content, content) AS display_content, created_at, file_paths
+            FROM messages
+            WHERE session_id = ?
+            ORDER BY id ASC
+            """,
             (session_id,),
         ).fetchall()
     return [dict(row) for row in rows]
@@ -61,7 +72,13 @@ def fetch_all_session_messages(session_id: str) -> list[dict[str, Any]]:
 def fetch_sessions() -> list[dict[str, Any]]:
     query = """
         SELECT s.session_id, s.created_at,
-        (SELECT content FROM messages m WHERE m.session_id = s.session_id ORDER BY id ASC LIMIT 1) AS preview
+        (
+            SELECT COALESCE(display_content, content)
+            FROM messages m
+            WHERE m.session_id = s.session_id
+            ORDER BY id ASC
+            LIMIT 1
+        ) AS preview
         FROM sessions s
         ORDER BY s.created_at DESC
     """

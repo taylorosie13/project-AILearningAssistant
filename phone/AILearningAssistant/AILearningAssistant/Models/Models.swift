@@ -345,11 +345,6 @@ nonisolated struct ChatMessage: Identifiable, Codable {
     }
 }
 
-nonisolated struct ChatResponse: Codable {
-    let session_id: String
-    let response: String
-}
-
 nonisolated struct ChatStreamEvent: Decodable {
     let session_id: String?
     let text: String?

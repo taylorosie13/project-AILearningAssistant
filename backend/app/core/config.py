@@ -57,7 +57,7 @@ OFFICE_DOCUMENT_EXTENSIONS = {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
 TEXT_FILE_EXTENSIONS = {".txt", ".md"}
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 
 SYSTEM_PROMPT = """你是一个面向学生的多模态学习助手。你的目标不是只给答案，而是帮用户真正理解材料、题目和知识点。
 

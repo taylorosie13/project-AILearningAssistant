@@ -51,10 +51,13 @@ def translate_gemini_error(error: Exception) -> HTTPException:
     if "api key" in lowered or "permission denied" in lowered or "unauthorized" in lowered:
         return HTTPException(status_code=500, detail="API Key 无效或权限不足，请检查后端配置。")
 
+    if "unexpected model name format" in lowered or "invalid_argument" in lowered:
+        return HTTPException(status_code=500, detail=f"当前模型 {GEMINI_MODEL} 配置不正确，请检查后端 GEMINI_MODEL。")
+
     if "not found" in lowered and "model" in lowered:
         return HTTPException(status_code=500, detail=f"当前模型 {GEMINI_MODEL} 不可用，请检查 GEMINI_MODEL 配置。")
 
-    return HTTPException(status_code=500, detail=f"Gemini 调用失败：{message}")
+    return HTTPException(status_code=500, detail="Gemini 服务暂时调用失败，请稍后再试。")
 
 
 def get_gemini_file_name(uploaded_file: object) -> str | None:

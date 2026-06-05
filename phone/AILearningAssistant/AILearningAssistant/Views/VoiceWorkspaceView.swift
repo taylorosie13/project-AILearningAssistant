@@ -12,6 +12,7 @@ struct VoiceWorkspaceView: View {
     @ObservedObject var noteViewModel: NoteViewModel
     @ObservedObject var store: VoiceCaptureStore
     let showsDismissButton: Bool
+    let onReturnToChat: (() -> Void)?
     @StateObject private var voiceInputController = VoiceInputController()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -23,12 +24,20 @@ struct VoiceWorkspaceView: View {
     @State private var editingSavedTranscript: String = ""
     @State private var localAlert: ChatViewModel.AlertState?
     @State private var bannerTask: Task<Void, Never>?
+    @State private var generatingNoteCaptureIDs: Set<UUID> = []
 
-    init(viewModel: ChatViewModel, noteViewModel: NoteViewModel, store: VoiceCaptureStore, showsDismissButton: Bool = false) {
+    init(
+        viewModel: ChatViewModel,
+        noteViewModel: NoteViewModel,
+        store: VoiceCaptureStore,
+        showsDismissButton: Bool = false,
+        onReturnToChat: (() -> Void)? = nil
+    ) {
         self.viewModel = viewModel
         self.noteViewModel = noteViewModel
         self.store = store
         self.showsDismissButton = showsDismissButton
+        self.onReturnToChat = onReturnToChat
     }
 
     var body: some View {
@@ -129,7 +138,15 @@ struct VoiceWorkspaceView: View {
             }
         }
         .navigationDestination(item: $noteViewModel.presentedNote) { note in
-            NoteDetailView(note: note, noteViewModel: noteViewModel, chatViewModel: viewModel)
+            NoteDetailView(
+                note: note,
+                noteViewModel: noteViewModel,
+                chatViewModel: viewModel,
+                onAskAI: { selectedNote in
+                    viewModel.startNewChat(with: selectedNote)
+                    returnToChat()
+                }
+            )
         }
     }
 
@@ -170,9 +187,11 @@ struct VoiceWorkspaceView: View {
                     ForEach(store.captures) { capture in
                         SavedVoiceCaptureRow(
                             capture: capture,
+                            isGeneratingNote: generatingNoteCaptureIDs.contains(capture.id),
                             onEdit: { beginEditing(capture) },
+                            onAskAI: { sendSavedCaptureToAI(capture) },
                             onGenerateNote: {
-                                Task { _ = await noteViewModel.generateNote(from: capture) }
+                                generateNote(from: capture)
                             }
                         )
                             .listRowBackground(Color.clear)
@@ -382,7 +401,27 @@ struct VoiceWorkspaceView: View {
         }
 
         clearPreparedContent(clearLiveTranscript: true)
-        dismiss()
+        returnToChat()
+    }
+
+    private func sendSavedCaptureToAI(_ capture: SavedVoiceCapture) {
+        viewModel.addAttachment(
+            LocalAttachment(
+                displayName: "voice-\(capture.createdAt.formatted(date: .numeric, time: .omitted)).m4a",
+                fileKind: .audio,
+                mimeType: "audio/m4a",
+                localURL: capture.audioURL
+            )
+        )
+
+        let existing = viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if existing.isEmpty {
+            viewModel.inputText = capture.transcript
+        } else {
+            viewModel.inputText = "\(viewModel.inputText)\n\(capture.transcript)"
+        }
+
+        returnToChat()
     }
 
     private func clearPreparedContent(clearLiveTranscript: Bool = false) {
@@ -424,13 +463,34 @@ struct VoiceWorkspaceView: View {
             localAlert = .init(title: "保存失败", message: error.localizedDescription)
         }
     }
+
+    private func generateNote(from capture: SavedVoiceCapture) {
+        guard !generatingNoteCaptureIDs.contains(capture.id) else { return }
+        generatingNoteCaptureIDs.insert(capture.id)
+
+        Task {
+            _ = await noteViewModel.generateNote(from: capture)
+            generatingNoteCaptureIDs.remove(capture.id)
+        }
+    }
+
+    private func returnToChat() {
+        if let onReturnToChat {
+            onReturnToChat()
+        } else {
+            dismiss()
+        }
+    }
 }
 
 struct SavedVoiceCaptureRow: View {
     let capture: SavedVoiceCapture
+    let isGeneratingNote: Bool
     let onEdit: () -> Void
+    let onAskAI: () -> Void
     let onGenerateNote: () -> Void
     @StateObject private var player = AudioPreviewPlayer()
+    @State private var isConfirmingNoteGeneration = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -470,17 +530,41 @@ struct SavedVoiceCaptureRow: View {
                 player: player
             )
 
-            Button(action: onGenerateNote) {
-                Label("整理成笔记", systemImage: "book.closed")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(AppTheme.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            HStack(spacing: 10) {
+                Button(action: onAskAI) {
+                    Label("问 AI", systemImage: "sparkles")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(AppTheme.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+
+                Button(action: { isConfirmingNoteGeneration = true }) {
+                    Label(isGeneratingNote ? "整理中" : "整理成笔记", systemImage: "book.closed")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(AppTheme.accent)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(AppTheme.userBubble)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+                .disabled(isGeneratingNote)
             }
         }
         .padding(.vertical, 8)
+        .alert("整理成笔记？", isPresented: $isConfirmingNoteGeneration) {
+            Button("取消", role: .cancel) {}
+            Button("开始整理") {
+                onGenerateNote()
+            }
+            .disabled(isGeneratingNote)
+        } message: {
+            Text("会根据这段语音转写生成一篇新笔记。")
+        }
         .onDisappear {
             Task { @MainActor in
                 player.stop()

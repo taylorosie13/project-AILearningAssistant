@@ -297,69 +297,6 @@ class ChatViewModel: ObservableObject {
             .filter { !$0.isEmpty }
     }
 
-    func askAIAboutNote(_ note: Note, question: String) async throws -> String {
-        let prompt = buildContextQuestionPrompt(
-            sourceName: "笔记",
-            title: note.title,
-            summary: note.summary,
-            content: note.content_markdown,
-            question: question
-        )
-        let response = try await NetworkManager.shared.sendMessage(prompt: prompt, sessionId: nil, filePaths: nil)
-        return response.response
-    }
-
-    func askAIAboutCard(_ card: KnowledgeCard, question: String) async throws -> String {
-        let prompt = buildContextQuestionPrompt(
-            sourceName: "知识卡片",
-            title: card.title,
-            summary: card.category,
-            content: card.content,
-            question: question
-        )
-        let response = try await NetworkManager.shared.sendMessage(prompt: prompt, sessionId: nil, filePaths: nil)
-        return response.response
-    }
-
-    private func buildContextQuestionPrompt(
-        sourceName: String,
-        title: String,
-        summary: String?,
-        content: String,
-        question: String
-    ) -> String {
-        let cleanedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanedSummary = summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let cleanedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        var sections = [
-            "请只基于我提供的\(sourceName)内容来回答问题。",
-            "如果内容里信息不够，请直接说明哪里不够，不要编造。",
-            "",
-            "## \(sourceName)标题",
-            title,
-        ]
-
-        if !cleanedSummary.isEmpty {
-            sections += [
-                "",
-                "## 补充信息",
-                cleanedSummary
-            ]
-        }
-
-        sections += [
-            "",
-            "## \(sourceName)内容",
-            cleanedContent,
-            "",
-            "## 用户问题",
-            cleanedQuestion
-        ]
-
-        return sections.joined(separator: "\n")
-    }
-
     func deleteKnowledgeCard(_ card: KnowledgeCard) {
         Task {
             do {
@@ -414,6 +351,26 @@ class ChatViewModel: ObservableObject {
         queueAttachmentForUpload(
             LocalAttachment(
                 displayName: knowledgeCardAttachmentFileName(for: card),
+                fileKind: .document,
+                mimeType: "text/markdown",
+                data: data,
+                requiresUserQuestion: true
+            )
+        )
+    }
+
+    func startNewChat(with note: Note) {
+        startNewChat()
+
+        let markdown = buildNoteAttachmentMarkdown(note)
+        guard let data = markdown.data(using: .utf8) else {
+            activeAlert = AlertState(title: "笔记准备失败", message: "这篇笔记暂时不能作为附件使用。")
+            return
+        }
+
+        queueAttachmentForUpload(
+            LocalAttachment(
+                displayName: noteAttachmentFileName(for: note),
                 fileKind: .document,
                 mimeType: "text/markdown",
                 data: data,
@@ -488,6 +445,46 @@ class ChatViewModel: ObservableObject {
         return sections.joined(separator: "\n")
     }
 
+    private func buildNoteAttachmentMarkdown(_ note: Note) -> String {
+        var sections = [
+            "# \(note.title)",
+            "",
+            "> 这是一篇笔记。请把它当作用户本次提问的参考材料。",
+            "",
+            "来源：\(note.sourceDescription)",
+        ]
+
+        if let category = note.category?.trimmingCharacters(in: .whitespacesAndNewlines), !category.isEmpty {
+            sections += [
+                "",
+                "分类：\(category)",
+            ]
+        }
+
+        if !note.tags.isEmpty {
+            sections += [
+                "",
+                "标签：\(note.tags.joined(separator: "、"))",
+            ]
+        }
+
+        if let summary = note.summary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
+            sections += [
+                "",
+                "## 摘要",
+                summary,
+            ]
+        }
+
+        sections += [
+            "",
+            "## 笔记内容",
+            note.detailContentMarkdown.trimmingCharacters(in: .whitespacesAndNewlines),
+        ]
+
+        return sections.joined(separator: "\n")
+    }
+
     private func knowledgeCardAttachmentFileName(for card: KnowledgeCard) -> String {
         let rawTitle = card.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let fallbackTitle = rawTitle.isEmpty ? "knowledge-card" : rawTitle
@@ -499,6 +496,19 @@ class ChatViewModel: ObservableObject {
             .trimmingCharacters(in: CharacterSet(charactersIn: "-_"))
         let limitedTitle = String((safeTitle.isEmpty ? "knowledge-card" : safeTitle).prefix(40))
         return "知识卡片-\(limitedTitle).md"
+    }
+
+    private func noteAttachmentFileName(for note: Note) -> String {
+        let rawTitle = note.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackTitle = rawTitle.isEmpty ? "note" : rawTitle
+        let safeTitle = fallbackTitle
+            .map { character -> Character in
+                character.isLetter || character.isNumber || character == "-" || character == "_" ? character : "-"
+            }
+            .reduce(into: "") { $0.append($1) }
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-_"))
+        let limitedTitle = String((safeTitle.isEmpty ? "note" : safeTitle).prefix(40))
+        return "笔记-\(limitedTitle).md"
     }
 
     private func syncLoadingState() {
@@ -543,9 +553,22 @@ class ChatViewModel: ObservableObject {
     private func markAttachmentUploadFailed(id: UUID, message: String) {
         updateAttachmentState(id: id, state: .failed)
         activeAlert = AlertState(
-            title: "文件还没准备好",
+            title: attachmentFailureTitle(for: message),
             message: message
         )
+    }
+
+    private func attachmentFailureTitle(for message: String) -> String {
+        if message.contains("转换失败") || message.contains("转 PDF") || message.contains("转PDF") {
+            return "文档转换失败"
+        }
+        if message.contains("云端解析失败") || message.contains("解析时间超时") {
+            return "文件解析失败"
+        }
+        if message.contains("网络") || message.contains("连接") || message.contains("超时") {
+            return "网络出了点问题"
+        }
+        return "文件处理失败"
     }
 
     private func cancelAllAttachmentUploads() {
@@ -724,6 +747,7 @@ class ChatViewModel: ObservableObject {
 
                 try await NetworkManager.shared.streamMessage(
                     prompt: textToSend,
+                    displayPrompt: textToSend,
                     sessionId: self.currentSessionId,
                     filePaths: uploadedFilePaths.isEmpty ? nil : uploadedFilePaths,
                     learningMode: self.selectedLearningMode

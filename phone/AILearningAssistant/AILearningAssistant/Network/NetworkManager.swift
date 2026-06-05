@@ -83,6 +83,7 @@ nonisolated struct MessageResponse: Decodable {
 
 nonisolated struct ChatRequestBody: Encodable {
     let prompt: String
+    let display_prompt: String?
     let session_id: String?
     let file_paths: [String]?
     let learning_mode: LearningMode
@@ -128,7 +129,7 @@ private extension NetworkError {
             return "暂时不能处理文档,请联系服务器管理员。"
         }
 
-        if lowered.contains("office 文件转 pdf 失败") {
+        if lowered.contains("office 文件转 pdf 失败") || lowered.contains("office文件转pdf失败") {
             return "文档转换失败。请确认文件没有损坏，或换一个文件后再试。"
         }
 
@@ -252,32 +253,9 @@ final class NetworkManager: Sendable {
         return data
     }
     
-    nonisolated func sendMessage(
-        prompt: String,
-        sessionId: String?,
-        filePaths: [String]?,
-        learningMode: LearningMode = .normal
-    ) async throws -> ChatResponse {
-        let url = try makeURL(path: "/chat")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 60 * 60
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(
-            ChatRequestBody(
-                prompt: prompt,
-                session_id: sessionId,
-                file_paths: filePaths?.isEmpty == true ? nil : filePaths,
-                learning_mode: learningMode
-            )
-        )
-
-        let data = try await send(request, using: longRunningSession)
-        return try JSONDecoder().decode(ChatResponse.self, from: data)
-    }
-
     nonisolated func streamMessage(
         prompt: String,
+        displayPrompt: String? = nil,
         sessionId: String?,
         filePaths: [String]?,
         learningMode: LearningMode = .normal,
@@ -292,6 +270,7 @@ final class NetworkManager: Sendable {
         request.httpBody = try JSONEncoder().encode(
             ChatRequestBody(
                 prompt: prompt,
+                display_prompt: displayPrompt,
                 session_id: sessionId,
                 file_paths: filePaths?.isEmpty == true ? nil : filePaths,
                 learning_mode: learningMode

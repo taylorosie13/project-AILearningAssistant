@@ -29,7 +29,6 @@ from app.services.file_service import (
 from app.services.gemini_service import (
     ensure_client,
     generate_content_stream_with_retry,
-    generate_content_with_retry,
     translate_gemini_error,
 )
 
@@ -110,42 +109,6 @@ async def _prepare_current_parts(normalized_file_paths: list[str]) -> list[dict[
     return parts
 
 
-async def chat_with_gemini(request: ChatRequest) -> dict[str, object]:
-    ensure_client()
-    normalized_file_paths = normalize_file_paths(request.file_paths)
-    validate_files_for_model(normalized_file_paths)
-
-    current_session_id = request.session_id
-    if current_session_id and not session_exists(current_session_id):
-        create_session(current_session_id)
-    elif not current_session_id:
-        current_session_id = create_session()
-
-    save_message(current_session_id, "user", request.prompt, normalized_file_paths)
-
-    history_rows = fetch_recent_messages(current_session_id, CHAT_HISTORY_LIMIT)
-    gemini_contents: list[dict[str, object]] = []
-    for row in history_rows[:-1]:
-        gemini_contents.append(
-            {
-                "role": row["role"],
-                "parts": [{"text": row["content"]}],
-            }
-        )
-
-    current_parts = [{"text": request.prompt}]
-    current_parts.extend(await _prepare_current_parts(normalized_file_paths))
-    gemini_contents.append({"role": "user", "parts": current_parts})
-
-    print(f"正在调用 Gemini 模型 ({len(gemini_contents)} 轮对话上下文)...")
-    ai_response_text = await generate_content_with_retry(
-        gemini_contents,
-        system_instruction=_build_system_instruction(request.learning_mode),
-    )
-    save_message(current_session_id, "model", ai_response_text)
-    return {"session_id": current_session_id, "response": ai_response_text}
-
-
 def _format_sse(event: str, data: dict[str, object]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -154,6 +117,7 @@ async def stream_chat_with_gemini(request: ChatRequest) -> AsyncIterator[str]:
     ensure_client()
     normalized_file_paths = normalize_file_paths(request.file_paths)
     validate_files_for_model(normalized_file_paths)
+    display_prompt = (request.display_prompt or "").strip() or request.prompt
 
     current_session_id = request.session_id
     if current_session_id and not session_exists(current_session_id):
@@ -161,7 +125,13 @@ async def stream_chat_with_gemini(request: ChatRequest) -> AsyncIterator[str]:
     elif not current_session_id:
         current_session_id = create_session()
 
-    save_message(current_session_id, "user", request.prompt, normalized_file_paths)
+    save_message(
+        current_session_id,
+        "user",
+        request.prompt,
+        normalized_file_paths,
+        display_content=display_prompt,
+    )
 
     history_rows = fetch_recent_messages(current_session_id, CHAT_HISTORY_LIMIT)
     gemini_contents: list[dict[str, object]] = []
@@ -181,7 +151,7 @@ async def stream_chat_with_gemini(request: ChatRequest) -> AsyncIterator[str]:
         accumulated_text = ""
         try:
             yield _format_sse("session", {"session_id": current_session_id})
-            print(f"正在流式调用 Gemini 模型 ({len(gemini_contents)} 轮对话上下文)...")
+            print(f"正在调用 Gemini 模型 ({len(gemini_contents)} 轮对话上下文)...")
             stream = await generate_content_stream_with_retry(
                 gemini_contents,
                 system_instruction=_build_system_instruction(request.learning_mode),
@@ -229,7 +199,7 @@ def get_session_messages(session_id: str) -> list[dict[str, object]]:
         messages.append(
             {
                 "role": row["role"],
-                "content": row["content"],
+                "content": row.get("display_content") or row["content"],
                 "created_at": row["created_at"],
                 "file_paths": file_paths,
             }

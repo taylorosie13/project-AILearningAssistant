@@ -1,9 +1,18 @@
 import SwiftUI
 
+private struct NoteGroup: Identifiable {
+    let category: String
+    let notes: [Note]
+
+    var id: String { category }
+}
+
 struct NotesView: View {
     @ObservedObject var noteViewModel: NoteViewModel
     @ObservedObject var chatViewModel: ChatViewModel
+    let onAskAI: (Note) -> Void
 
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var searchText = ""
     @State private var collapsedCategories: Set<String> = []
@@ -28,7 +37,7 @@ struct NotesView: View {
         }
     }
 
-    private var groupedNotes: [(category: String, notes: [Note])] {
+    private var groupedNotes: [NoteGroup] {
         let grouped = Dictionary(grouping: filteredNotes) { note in
             let trimmed = note.category?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return trimmed.isEmpty ? uncategorizedTitle : trimmed
@@ -36,7 +45,7 @@ struct NotesView: View {
 
         return grouped
             .map { category, notes in
-                (
+                NoteGroup(
                     category: category,
                     notes: notes.sorted { lhs, rhs in
                         if lhs.updated_at == rhs.updated_at {
@@ -100,54 +109,18 @@ struct NotesView: View {
                                 )
                             }
 
-                            ForEach(groupedNotes, id: \.category) { group in
-                                VStack(alignment: .leading, spacing: 14) {
-                                    Button {
-                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                            toggleCategory(group.category)
-                                        }
-                                    } label: {
-                                        HStack {
-                                            HStack(spacing: 8) {
-                                                Image(systemName: group.category == uncategorizedTitle ? "tray.full.fill" : "folder.fill")
-                                                    .foregroundColor(AppTheme.accent)
-                                                Text(group.category)
-                                                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                                                    .foregroundColor(AppTheme.accent)
-                                            }
-                                            Spacer()
-                                            Text("\(group.notes.count) 篇")
-                                                .font(.caption)
-                                                .foregroundColor(.gray)
-                                            Image(systemName: collapsedCategories.contains(group.category) ? "chevron.down" : "chevron.up")
-                                                .font(.system(size: 12, weight: .semibold))
-                                                .foregroundColor(.gray)
-                                        }
-                                    }
-                                    .buttonStyle(.plain)
-
-                                    if !collapsedCategories.contains(group.category) {
-                                        ForEach(group.notes) { note in
-                                            NavigationLink(destination: NoteDetailView(note: note, noteViewModel: noteViewModel, chatViewModel: chatViewModel)) {
-                                                NoteRow(note: note)
-                                            }
-                                            .buttonStyle(.plain)
-                                            .contextMenu {
-                                                Button {
-                                                    editingDraft = NoteDraft(note: note)
-                                                } label: {
-                                                    Label("编辑笔记", systemImage: "square.and.pencil")
-                                                }
-
-                                                Button(role: .destructive) {
-                                                    Task { await noteViewModel.deleteNote(note) }
-                                                } label: {
-                                                    Label("删除笔记", systemImage: "trash")
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                            ForEach(groupedNotes) { group in
+                                NoteCategoryGroupView(
+                                    category: group.category,
+                                    notes: group.notes,
+                                    isCollapsed: collapsedCategories.contains(group.category),
+                                    noteViewModel: noteViewModel,
+                                    chatViewModel: chatViewModel,
+                                    onAskAI: askAIInChat,
+                                    onToggle: toggleCategoryWithAnimation,
+                                    onEdit: editNote,
+                                    onDelete: deleteNote
+                                )
                             }
                         }
                         .padding(16)
@@ -201,32 +174,19 @@ struct NotesView: View {
             }
         }
         .task {
-            noteViewModel.loadInitialDataIfNeeded()
-            refreshDraftStatuses()
-            if noteViewModel.notes.isEmpty {
-                await noteViewModel.loadNotes()
-            }
+            await loadInitialContent()
         }
         .onChange(of: scenePhase) { _, newPhase in
-            guard newPhase == .active else { return }
-            refreshDraftStatuses()
+            handleScenePhaseChange(newPhase)
         }
         .onChange(of: noteViewModel.notes) { _, _ in
             refreshDraftStatuses()
         }
         .onChange(of: editingDraft?.id) { _, newValue in
-            if newValue == nil {
-                refreshDraftStatuses()
-            }
+            handleEditingDraftChange(newValue)
         }
         .onChange(of: noteViewModel.activeAlert?.id) { _, newValue in
-            bannerTask?.cancel()
-            guard newValue != nil else { return }
-            bannerTask = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
-                guard !Task.isCancelled else { return }
-                withAnimation { noteViewModel.dismissAlert() }
-            }
+            handleActiveAlertChange(newValue)
         }
         .navigationDestination(item: $editingDraft) { draft in
             NoteEditView(draft: draft, noteViewModel: noteViewModel) { _ in
@@ -248,7 +208,12 @@ struct NotesView: View {
             Text("清空后，这份草稿就找不回来了。")
         }
         .navigationDestination(item: $noteViewModel.presentedNote) { note in
-            NoteDetailView(note: note, noteViewModel: noteViewModel, chatViewModel: chatViewModel)
+            NoteDetailView(
+                note: note,
+                noteViewModel: noteViewModel,
+                chatViewModel: chatViewModel,
+                onAskAI: askAIInChat
+            )
         }
     }
 
@@ -286,6 +251,54 @@ struct NotesView: View {
             collapsedCategories.remove(category)
         } else {
             collapsedCategories.insert(category)
+        }
+    }
+
+    private func toggleCategoryWithAnimation(_ category: String) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            toggleCategory(category)
+        }
+    }
+
+    private func editNote(_ note: Note) {
+        editingDraft = NoteDraft(note: note)
+    }
+
+    private func deleteNote(_ note: Note) {
+        Task { await noteViewModel.deleteNote(note) }
+    }
+
+    private func askAIInChat(_ note: Note) {
+        onAskAI(note)
+        dismiss()
+    }
+
+    private func loadInitialContent() async {
+        noteViewModel.loadInitialDataIfNeeded()
+        refreshDraftStatuses()
+        if noteViewModel.notes.isEmpty {
+            await noteViewModel.loadNotes()
+        }
+    }
+
+    private func handleScenePhaseChange(_ newPhase: ScenePhase) {
+        guard newPhase == .active else { return }
+        refreshDraftStatuses()
+    }
+
+    private func handleEditingDraftChange(_ draftID: NoteDraft.ID?) {
+        if draftID == nil {
+            refreshDraftStatuses()
+        }
+    }
+
+    private func handleActiveAlertChange(_ alertID: ChatViewModel.AlertState.ID?) {
+        bannerTask?.cancel()
+        guard alertID != nil else { return }
+        bannerTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation { noteViewModel.dismissAlert() }
         }
     }
 
@@ -465,5 +478,92 @@ private struct NoteRow: View {
         .background(Color.white)
         .cornerRadius(18)
         .shadow(color: AppTheme.shadow, radius: 4, x: 0, y: 2)
+    }
+}
+
+private struct NoteCategoryGroupView: View {
+    let category: String
+    let notes: [Note]
+    let isCollapsed: Bool
+    @ObservedObject var noteViewModel: NoteViewModel
+    @ObservedObject var chatViewModel: ChatViewModel
+    let onAskAI: (Note) -> Void
+    let onToggle: (String) -> Void
+    let onEdit: (Note) -> Void
+    let onDelete: (Note) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Button {
+                onToggle(category)
+            } label: {
+                HStack {
+                    HStack(spacing: 8) {
+                        Image(systemName: category == "未分类" ? "tray.full.fill" : "folder.fill")
+                            .foregroundColor(AppTheme.accent)
+                        Text(category)
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                            .foregroundColor(AppTheme.accent)
+                    }
+                    Spacer()
+                    Text("\(notes.count) 篇")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                    Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.gray)
+                }
+            }
+            .buttonStyle(.plain)
+
+            if !isCollapsed {
+                ForEach(notes) { note in
+                    NoteNavigationRow(
+                        note: note,
+                        noteViewModel: noteViewModel,
+                        chatViewModel: chatViewModel,
+                        onAskAI: onAskAI,
+                        onEdit: {
+                            onEdit(note)
+                        },
+                        onDelete: {
+                            onDelete(note)
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct NoteNavigationRow: View {
+    let note: Note
+    @ObservedObject var noteViewModel: NoteViewModel
+    @ObservedObject var chatViewModel: ChatViewModel
+    let onAskAI: (Note) -> Void
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        NavigationLink(
+            destination: NoteDetailView(
+                note: note,
+                noteViewModel: noteViewModel,
+                chatViewModel: chatViewModel,
+                onAskAI: onAskAI
+            )
+        ) {
+            NoteRow(note: note)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(action: onEdit) {
+                Label("编辑笔记", systemImage: "square.and.pencil")
+            }
+
+            Button(role: .destructive, action: onDelete) {
+                Label("删除笔记", systemImage: "trash")
+            }
+        }
     }
 }

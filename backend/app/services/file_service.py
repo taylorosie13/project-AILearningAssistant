@@ -140,17 +140,26 @@ def build_file_upload_error(file_name: str) -> str:
     extension = get_file_extension(file_name)
     if extension in OFFICE_DOCUMENT_EXTENSIONS:
         return (
-            f"文件 {file_name} 转换或上传失败。"
-            "请确认本机已安装 LibreOffice，并稍后重试。"
+            f"文档《{file_name}》转换失败。请确认文件没有损坏，或换一个文件后再试。"
         )
     return f"文件 {file_name} 发送给模型时失败，请稍后重试。"
+
+
+def build_prepare_file_warning(file_name: str, error: HTTPException) -> str:
+    detail = str(error.detail)
+    if get_file_extension(file_name) in OFFICE_DOCUMENT_EXTENSIONS:
+        if "未检测到" in detail or "libreoffice" in detail.lower():
+            return "当前服务暂时不能处理 Office 文档，请稍后再试或联系管理员。"
+        if "转pdf失败" in detail.replace(" ", "").lower():
+            return f"文档《{file_name}》转换失败。请确认文件没有损坏，或换一个文件后再试。"
+    return detail
 
 
 def build_model_file_upload_error(file_name: str, error: Exception) -> HTTPException:
     if "文件处理超时" in str(error):
         return HTTPException(
             status_code=504,
-            detail=f"文件《{file_name}》已经上传成功，但云端解析花的时间太久了。请稍后再试，或者换一个更短、更小的视频后重试。",
+            detail=f"文件《{file_name}》已经上传成功，但解析时间超时。请稍后再试，或者换一个更短、更小的视频后重试。",
         )
     if "文件处理失败" in str(error):
         return HTTPException(
@@ -160,12 +169,12 @@ def build_model_file_upload_error(file_name: str, error: Exception) -> HTTPExcep
     if is_network_transport_error(error):
         return HTTPException(
             status_code=502,
-            detail=f"文件《{file_name}》已经在本地处理成功，但上传到 Gemini 时网络连接被中断。请稍后重试；如果持续出现，请检查当前网络、代理或 VPN 设置。",
+            detail=f"文件《{file_name}》已经在本地处理成功，但上传到云端时网络连接被中断。请稍后重试；如果持续出现，请检查当前网络设置。",
         )
     if get_file_extension(file_name) in OFFICE_DOCUMENT_EXTENSIONS:
         return HTTPException(
             status_code=500,
-            detail=f"文件《{file_name}》已成功转成 PDF，但上传到 Gemini 失败。请稍后重试，并查看后端日志中的具体错误信息。",
+            detail=f"文件《{file_name}》已成功转成 PDF，但上传到云端失败，请稍后重试。",
         )
     return HTTPException(status_code=500, detail=build_file_upload_error(file_name))
 
@@ -191,8 +200,8 @@ def validate_files_for_model(file_paths: list[str]) -> None:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"这些 Office 文件需要先转换为 PDF 才能交给 Gemini：{'、'.join(office_names)}。"
-                "当前后端未检测到 LibreOffice，请先安装 LibreOffice 后再重试。"
+                f"这些文件需要先转换为PDF才能交给云端服务：{'、'.join(office_names)}。"
+                "当前未检测到转码插件，请联系网络管理员。"
             ),
         )
 
@@ -204,7 +213,7 @@ def extract_text_file_content(file_path: Path) -> str:
 def convert_office_file_to_pdf_sync(file_path: Path) -> Path:
     converter = get_office_converter_command()
     if not converter:
-        raise HTTPException(status_code=400, detail="当前后端未检测到 LibreOffice，无法将 Office 文件转换为 PDF。")
+        raise HTTPException(status_code=400, detail="当前后端未检测到转换插件，无法将Office文件转换为 PDF。")
 
     temp_dir = Path(tempfile.mkdtemp(prefix=TEMP_DIR_PREFIX))
     output_pdf = temp_dir / f"{file_path.stem}.pdf"
@@ -216,7 +225,7 @@ def convert_office_file_to_pdf_sync(file_path: Path) -> Path:
     if completed.returncode != 0 or not output_pdf.exists():
         details = completed.stderr.strip() or completed.stdout.strip() or "未知错误"
         shutil.rmtree(temp_dir, ignore_errors=True)
-        raise HTTPException(status_code=500, detail=f"Office 文件转 PDF 失败：{details}")
+        raise HTTPException(status_code=500, detail=f"Office文件转PDF失败：{details}")
     return output_pdf
 
 
@@ -248,7 +257,7 @@ async def prepare_file_for_model(
         if extension in OFFICE_DOCUMENT_EXTENSIONS:
             upload_source_path = await convert_office_file_to_pdf(file_path)
             temp_cleanup_dir = upload_source_path.parent
-            print(f"✅ 已将 Office 文件转换为 PDF: {resolved_display_name} -> {upload_source_path.name}")
+            print(f"✅ 已将Office文件转换为PDF: {resolved_display_name} -> {upload_source_path.name}")
 
         if extension in TEXT_FILE_EXTENSIONS:
             text_content = (await extract_text_from_file(file_path)).strip()
@@ -280,7 +289,7 @@ async def prepare_file_for_model(
     except HTTPException:
         raise
     except Exception as error:
-        print(f"❌ 文件预处理失败: {resolved_display_name} -> {error}")
+        print(f"❌文件预处理失败: {resolved_display_name} -> {error}")
         raise build_model_file_upload_error(resolved_display_name, error)
     finally:
         if temp_cleanup_dir:
@@ -348,7 +357,7 @@ async def save_upload_file(file: UploadFile) -> dict[str, object]:
             await prepare_file_for_model(file_path, display_name=safe_name, file_kind=file_kind)
         except HTTPException as error:
             prepared_for_model = False
-            model_warning = str(error.detail)
+            model_warning = build_prepare_file_warning(safe_name, error)
             print(f"⚠️ 文件已上传到本地，但预处理失败: {safe_name} -> {model_warning}")
         except Exception as error:
             prepared_for_model = False

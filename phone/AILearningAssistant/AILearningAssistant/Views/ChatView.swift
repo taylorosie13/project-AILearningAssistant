@@ -42,6 +42,12 @@ struct AppTheme {
     static let sidebarBackground = Color(red: 0.94, green: 0.94, blue: 0.92)
 }
 
+private enum ChatRoute: Hashable {
+    case notes
+    case knowledgeCards
+    case voiceWorkspace
+}
+
 struct ChatView: View {
     @AppStorage(LaunchPermissionViewModel.localNetworkApprovalKey) private var startupLocalNetworkApproved = false
     @StateObject private var viewModel = ChatViewModel()
@@ -50,6 +56,7 @@ struct ChatView: View {
     @State private var showCamera = false
     @State private var showFileImporter = false
     @State private var showVoiceWorkspace = false
+    @State private var navigationPath: [ChatRoute] = []
     @State private var cameraImage: UIImage? = nil
     @State private var showSidebar = false
     @State private var bannerTask: Task<Void, Never>?
@@ -57,7 +64,7 @@ struct ChatView: View {
     @State private var scrollIdleTask: Task<Void, Never>?
     
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             GeometryReader { geometry in
                 let screenWidth = geometry.size.width
                 
@@ -66,32 +73,11 @@ struct ChatView: View {
                     
                     ScrollViewReader { proxy in
                         ScrollView {
-                            VStack(spacing: 24) {
-                                if viewModel.messages.isEmpty {
-                                    EmptyStateView()
-                                } else {
-                                    ForEach(viewModel.messages) { message in
-                                        MessageBubble(
-                                            message: message,
-                                            viewModel: viewModel,
-                                            noteViewModel: noteViewModel,
-                                            isMessageScrollActive: isMessageScrollActive
-                                        )
-                                            .transition(.asymmetric(
-                                                insertion: .move(edge: .bottom).combined(with: .opacity),
-                                                removal: .opacity
-                                            ))
-                                    }
-                                }
-
-                                if viewModel.isLoading {
-                                    HStack {
-                                        LoadingIndicator(statusText: viewModel.processingStage.statusText)
-                                            .padding(.leading, 20)
-                                        Spacer()
-                                    }
-                                }
-                            }
+                            ChatMessageList(
+                                viewModel: viewModel,
+                                noteViewModel: noteViewModel,
+                                isMessageScrollActive: isMessageScrollActive
+                            )
                             .padding(.vertical, 20)
                             .onChange(of: viewModel.messages.count) { oldValue, newValue in
                                 withAnimation { scrollToBottom(proxy: proxy) }
@@ -259,7 +245,44 @@ struct ChatView: View {
                     noteViewModel.loadInitialDataIfNeeded()
                 }
                 .navigationDestination(item: $noteViewModel.presentedNote) { note in
-                    NoteDetailView(note: note, noteViewModel: noteViewModel, chatViewModel: viewModel)
+                    NoteDetailView(
+                        note: note,
+                        noteViewModel: noteViewModel,
+                        chatViewModel: viewModel,
+                        onAskAI: { selectedNote in
+                            viewModel.startNewChat(with: selectedNote)
+                            returnToChatRoot()
+                        }
+                    )
+                }
+                .navigationDestination(for: ChatRoute.self) { route in
+                    switch route {
+                    case .notes:
+                        NotesView(
+                            noteViewModel: noteViewModel,
+                            chatViewModel: viewModel,
+                            onAskAI: { note in
+                                viewModel.startNewChat(with: note)
+                                returnToChatRoot()
+                            }
+                        )
+                    case .knowledgeCards:
+                        KnowledgeCardView(
+                            viewModel: viewModel,
+                            noteViewModel: noteViewModel,
+                            onAskAI: { card in
+                                viewModel.startNewChat(with: card)
+                                returnToChatRoot()
+                            }
+                        )
+                    case .voiceWorkspace:
+                        VoiceWorkspaceView(
+                            viewModel: viewModel,
+                            noteViewModel: noteViewModel,
+                            store: voiceCaptureStore,
+                            onReturnToChat: returnToChatRoot
+                        )
+                    }
                 }
             }
             .preferredColorScheme(.light)
@@ -284,6 +307,48 @@ struct ChatView: View {
             try? await Task.sleep(nanoseconds: 500_000_000)
             guard !Task.isCancelled else { return }
             isMessageScrollActive = false
+        }
+    }
+
+    private func returnToChatRoot() {
+        navigationPath.removeAll()
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+            showSidebar = false
+        }
+    }
+}
+
+private struct ChatMessageList: View {
+    @ObservedObject var viewModel: ChatViewModel
+    @ObservedObject var noteViewModel: NoteViewModel
+    let isMessageScrollActive: Bool
+
+    var body: some View {
+        VStack(spacing: 24) {
+            if viewModel.messages.isEmpty {
+                EmptyStateView()
+            } else {
+                ForEach(viewModel.messages) { message in
+                    MessageBubble(
+                        message: message,
+                        viewModel: viewModel,
+                        noteViewModel: noteViewModel,
+                        isMessageScrollActive: isMessageScrollActive
+                    )
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                        removal: .opacity
+                    ))
+                }
+            }
+
+            if viewModel.isLoading {
+                HStack {
+                    LoadingIndicator(statusText: viewModel.processingStage.statusText)
+                        .padding(.leading, 20)
+                    Spacer()
+                }
+            }
         }
     }
 }
@@ -429,7 +494,7 @@ struct SidebarView: View {
                 // 滚动内容区
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
-                        NavigationLink(destination: NotesView(noteViewModel: noteViewModel, chatViewModel: viewModel)) {
+                        NavigationLink(value: ChatRoute.notes) {
                             HStack {
                                 Image(systemName: "book.closed.fill")
                                     .foregroundColor(AppTheme.accent)
@@ -452,16 +517,7 @@ struct SidebarView: View {
                         .buttonStyle(PlainButtonStyle())
 
                         // 知识卡片盒入口
-                        NavigationLink(
-                            destination: KnowledgeCardView(
-                                viewModel: viewModel,
-                                noteViewModel: noteViewModel,
-                                onAskAI: { card in
-                                    viewModel.startNewChat(with: card)
-                                    closeSidebar()
-                                }
-                            )
-                        ) {
+                        NavigationLink(value: ChatRoute.knowledgeCards) {
                             HStack {
                                 Image(systemName: "archivebox.fill")
                                     .foregroundColor(AppTheme.accent)
@@ -480,13 +536,7 @@ struct SidebarView: View {
                         .padding(.bottom, 10)
                         .buttonStyle(PlainButtonStyle())
 
-                        NavigationLink(
-                            destination: VoiceWorkspaceView(
-                                viewModel: viewModel,
-                                noteViewModel: noteViewModel,
-                                store: voiceCaptureStore
-                            )
-                        ) {
+                        NavigationLink(value: ChatRoute.voiceWorkspace) {
                             HStack {
                                 Image(systemName: "waveform.badge.mic")
                                     .foregroundColor(AppTheme.accent)
@@ -610,10 +660,10 @@ struct SidebarView: View {
                 HStack {
                     Image(systemName: "person.crop.circle.fill")
                         .foregroundColor(AppTheme.accent)
-                    Text("知芽")
+                    Text("taylorosie13")
                         .font(.footnote)
                     Spacer()
-                    Text("Beta v0.4")
+                    Text("Beta v0.5")
                         .font(.caption2)
                         .foregroundColor(.gray)
                 }
@@ -651,6 +701,7 @@ struct MessageBubble: View {
     @ObservedObject var viewModel: ChatViewModel
     @ObservedObject var noteViewModel: NoteViewModel
     let isMessageScrollActive: Bool
+    @State private var isConfirmingNoteGeneration = false
     var isUser: Bool { message.role == "user" }
     
     var body: some View {
@@ -676,9 +727,7 @@ struct MessageBubble: View {
                                     Button(action: { UIPasteboard.general.string = message.content }) {
                                         Label("复制文本", systemImage: "doc.on.doc")
                                     }
-                                    Button(action: {
-                                        Task { _ = await noteViewModel.generateNote(from: message) }
-                                    }) {
+                                    Button(action: { isConfirmingNoteGeneration = true }) {
                                         Label("整理成笔记", systemImage: "book.closed")
                                     }
                                     Button(action: { viewModel.saveAsKnowledgeCard(message: message) }) {
@@ -733,9 +782,7 @@ struct MessageBubble: View {
                                     .foregroundColor(AppTheme.accent.opacity(0.7))
                             }
 
-                            Button(action: {
-                                Task { _ = await noteViewModel.generateNote(from: message) }
-                            }) {
+                            Button(action: { isConfirmingNoteGeneration = true }) {
                                 Label("整理成笔记", systemImage: "book.closed")
                                     .font(.system(size: 11, weight: .medium))
                                     .foregroundColor(AppTheme.accent.opacity(0.7))
@@ -756,6 +803,14 @@ struct MessageBubble: View {
             }
         }
         .padding(.horizontal, 16)
+        .alert("整理成笔记？", isPresented: $isConfirmingNoteGeneration) {
+            Button("取消", role: .cancel) {}
+            Button("开始整理") {
+                Task { _ = await noteViewModel.generateNote(from: message) }
+            }
+        } message: {
+            Text("会根据这条消息生成一篇新笔记。")
+        }
     }
 }
 
@@ -1582,8 +1637,8 @@ struct EmptyStateView: View {
                 .frame(width: 68, height: 68)
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             VStack(spacing: 8) {
-                Text("知芽，陪你把知识学明白").font(.system(.title3, design: .rounded).bold()).foregroundColor(AppTheme.accent)
-                Text("拍题、语音、笔记、卡片，都能接着学。").font(.subheadline).foregroundColor(.gray)
+                Text("知芽").font(.system(.title3, design: .rounded).bold()).foregroundColor(AppTheme.accent)
+                Text("你的智能学习助手").font(.subheadline).foregroundColor(.gray)
             }
             Spacer()
         }
