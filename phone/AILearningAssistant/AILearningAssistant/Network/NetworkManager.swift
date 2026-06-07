@@ -64,7 +64,7 @@ private final class UploadTaskDelegate: NSObject, URLSessionTaskDelegate, URLSes
 }
 
 enum AppConfiguration {
-    static let defaultBaseURL = "http://192.168.1.246:8000"
+    static let defaultBaseURL = "http://10.59.9.200:8000"
 
     static var apiBaseURL: String {
         let configuredURL = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String
@@ -116,9 +116,50 @@ enum NetworkError: LocalizedError {
     }
 }
 
-private extension NetworkError {
-    static func userFriendlyServerMessage(statusCode: Int, message: String) -> String {
+extension NetworkError {
+    static func userFacingMessage(from error: Error, fallback: String) -> String {
+        let rawMessage = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        return sanitizeUserFacingMessage(rawMessage, fallback: fallback)
+    }
+
+    static func sanitizeUserFacingMessage(_ message: String, fallback: String = "刚刚操作没成功，请稍后再试。") -> String {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return fallback }
+
+        let lowered = trimmed.lowercased()
+        let technicalMarkers = [
+            "nsurlerrordomain",
+            "code=",
+            "errordomain=",
+            "nserrorfailingurl",
+            "error -"
+        ]
+
+        if technicalMarkers.contains(where: { lowered.contains($0) }) {
+            if lowered.contains("timed out") || lowered.contains("timeout") {
+                return "请求超时。请检查网络连接后再试。"
+            }
+
+            if lowered.contains("not connected") || lowered.contains("-1009") {
+                return "无网络连接，请检查网络后再试。"
+            }
+
+            if lowered.contains("cannot connect") || lowered.contains("could not connect") || lowered.contains("-1004") {
+                return "无法连接到服务器，请稍后再试或联系管理员。"
+            }
+
+            if lowered.contains("local network") || lowered.contains("prohibited") {
+                return "无法访问本地网络。请在系统设置里允许知芽访问本地网络后再试。"
+            }
+
+            return fallback
+        }
+
+        return trimmed
+    }
+
+    static func userFriendlyServerMessage(statusCode: Int, message: String) -> String {
+        let trimmed = sanitizeUserFacingMessage(message)
         let lowered = trimmed.lowercased()
 
         if lowered.contains("文件名无效") {
@@ -302,7 +343,8 @@ final class NetworkManager: Sendable {
                 let payload = try JSONDecoder().decode(ChatStreamEvent.self, from: data)
                 let eventType = ChatStreamEventType(rawValue: currentEvent) ?? .delta
                 if eventType == .error {
-                    let message = payload.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "服务有点异常，请稍后再试。"
+                    let rawMessage = payload.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let message = NetworkError.userFriendlyServerMessage(statusCode: -1, message: rawMessage.isEmpty ? "服务有点异常，请稍后再试。" : rawMessage)
                     throw NetworkError.serverError(statusCode: -1, message: message)
                 }
                 await onEvent(eventType, payload)
@@ -312,7 +354,8 @@ final class NetworkManager: Sendable {
         } catch let error as URLError {
             throw NetworkError.transportError(message: NetworkError.userFriendlyTransportMessage(for: error))
         } catch let error as DecodingError {
-            throw NetworkError.transportError(message: "流式响应解析失败：\(error.localizedDescription)")
+            print("流式响应解析失败: \(error)")
+            throw NetworkError.transportError(message: "服务器返回的内容暂时无法读取，请稍后再试。")
         }
     }
     

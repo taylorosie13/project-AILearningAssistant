@@ -62,6 +62,7 @@ struct ChatView: View {
     @State private var bannerTask: Task<Void, Never>?
     @State private var isMessageScrollActive = false
     @State private var scrollIdleTask: Task<Void, Never>?
+    private let bannerDismissAnimation = Animation.easeInOut(duration: 0.6)
     
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -112,7 +113,7 @@ struct ChatView: View {
                                 message: alert.message,
                                 onClose: {
                                     bannerTask?.cancel()
-                                    withAnimation {
+                                    withAnimation(bannerDismissAnimation) {
                                         if viewModel.activeAlert != nil {
                                             viewModel.dismissAlert()
                                         } else {
@@ -189,7 +190,10 @@ struct ChatView: View {
                             viewModel.addPickedFile(from: url)
                         }
                     case .failure(let error):
-                        viewModel.activeAlert = .init(title: "选择文件失败", message: error.localizedDescription)
+                        viewModel.activeAlert = .init(
+                            title: "选择文件失败",
+                            message: NetworkError.userFacingMessage(from: error, fallback: "没有选中文件，请重新选择后再试。")
+                        )
                     }
                 }
                 .sheet(isPresented: $viewModel.showingCardEditor) {
@@ -212,7 +216,7 @@ struct ChatView: View {
                     bannerTask = Task { @MainActor in
                         try? await Task.sleep(nanoseconds: 4_000_000_000)
                         guard !Task.isCancelled else { return }
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        withAnimation(bannerDismissAnimation) {
                             viewModel.dismissAlert()
                         }
                     }
@@ -223,7 +227,7 @@ struct ChatView: View {
                     bannerTask = Task { @MainActor in
                         try? await Task.sleep(nanoseconds: 4_000_000_000)
                         guard !Task.isCancelled else { return }
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        withAnimation(bannerDismissAnimation) {
                             noteViewModel.dismissAlert()
                         }
                     }
@@ -350,6 +354,17 @@ private struct ChatMessageList: View {
                 }
             }
         }
+    }
+}
+
+private struct AIResultNoticeView: View {
+    var body: some View {
+        Text("知芽是一款AI工具，请仔细甄别结果的正确性")
+            .font(.system(size: 10, weight: .regular))
+            .foregroundColor(AppTheme.accent.opacity(0.45))
+            .multilineTextAlignment(.center)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -663,7 +678,7 @@ struct SidebarView: View {
                     Text("taylorosie13")
                         .font(.footnote)
                     Spacer()
-                    Text("Beta v0.5")
+                    Text("Beta v0.6")
                         .font(.caption2)
                         .foregroundColor(.gray)
                 }
@@ -744,7 +759,7 @@ struct MessageBubble: View {
                         Image(systemName: "sparkles")
                             .font(.system(size: 14))
                             .foregroundColor(AppTheme.accent)
-                        Text("AI 解析")
+                        Text("AI解析")
                             .font(.system(size: 14, weight: .bold))
                             .foregroundColor(AppTheme.accent)
                         Spacer()
@@ -768,7 +783,7 @@ struct MessageBubble: View {
                                 .padding(.top, 4)
                         }
                         
-                        // 新增：AI 解析底部的功能操作栏
+                        // 功能操作栏
                         HStack(spacing: 16) {
                             Button(action: { UIPasteboard.general.string = message.content }) {
                                 Label("复制全文", systemImage: "doc.on.doc")
@@ -1201,6 +1216,11 @@ struct InputArea: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
             .background(Color.white)
+            AIResultNoticeView()
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 28)
+                .padding(.top, 0)
+                .padding(.bottom, 7)
         }
     }
 }

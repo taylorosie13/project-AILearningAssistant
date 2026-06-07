@@ -234,10 +234,9 @@ final class NoteViewModel: ObservableObject {
     }
 
     private func presentError(_ error: Error, fallback: String) {
-        let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         activeAlert = .init(
             title: fallback,
-            message: message.isEmpty ? "刚刚操作没成功，请稍后再试。" : message
+            message: NetworkError.userFacingMessage(from: error, fallback: "刚刚操作没成功，请稍后再试。")
         )
     }
 }

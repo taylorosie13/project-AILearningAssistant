@@ -31,9 +31,11 @@ struct NoteDetailView: View {
                         Text("摘要")
                             .font(.system(size: 16, weight: .bold, design: .rounded))
                             .foregroundColor(AppTheme.accent)
-                        Text(summary)
-                            .font(.system(size: 15))
-                            .foregroundColor(.primary)
+                        MarkdownView(
+                            content: summary,
+                            viewModel: chatViewModel,
+                            baseFontSize: 15
+                        )
                     }
                     .noteDetailCardStyle()
                 }

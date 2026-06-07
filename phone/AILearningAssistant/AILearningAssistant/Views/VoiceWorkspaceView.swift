@@ -368,7 +368,10 @@ struct VoiceWorkspaceView: View {
                     draftAttachment = result.attachment
                 }
             } catch {
-                localAlert = .init(title: "语音转写失败", message: error.localizedDescription)
+                localAlert = .init(
+                    title: "语音转写失败",
+                    message: NetworkError.userFacingMessage(from: error, fallback: "语音转写没有成功，请稍后再试。")
+                )
             }
         }
     }
@@ -384,7 +387,10 @@ struct VoiceWorkspaceView: View {
             clearPreparedContent(clearLiveTranscript: true)
             mode = .saved
         } catch {
-            localAlert = .init(title: "保存失败", message: error.localizedDescription)
+            localAlert = .init(
+                title: "保存失败",
+                message: NetworkError.userFacingMessage(from: error, fallback: "保存没有成功，请稍后再试。")
+            )
         }
     }
 
@@ -460,7 +466,10 @@ struct VoiceWorkspaceView: View {
             try store.updateCapture(capture, transcript: trimmedTranscript)
             editingCapture = nil
         } catch {
-            localAlert = .init(title: "保存失败", message: error.localizedDescription)
+            localAlert = .init(
+                title: "保存失败",
+                message: NetworkError.userFacingMessage(from: error, fallback: "保存没有成功，请稍后再试。")
+            )
         }
     }
 

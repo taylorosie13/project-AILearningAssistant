@@ -493,7 +493,7 @@ nonisolated struct Note: Identifiable, Codable, Hashable {
 
         trimLeadingBlankLines()
 
-        // “正文”这个小标题已经由外层卡片承担了。
+        //
         if let first = lines.first, first.trimmingCharacters(in: .whitespacesAndNewlines) == "## 正文" {
             lines.removeFirst()
         }

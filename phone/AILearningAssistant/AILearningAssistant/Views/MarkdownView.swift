@@ -5,13 +5,19 @@ struct MarkdownView: View {
     let content: String
     @ObservedObject var viewModel: ChatViewModel
     var maxDisplayHeight: CGFloat? = nil
+    var baseFontSize: CGFloat = 17
     @State private var webViewHeight: CGFloat = 50 
 
     var body: some View {
         let renderedHeight = min(webViewHeight, maxDisplayHeight ?? webViewHeight)
         let isTruncated = (maxDisplayHeight ?? .greatestFiniteMagnitude) < webViewHeight
 
-        WebView(content: content, dynamicHeight: $webViewHeight, viewModel: viewModel)
+        WebView(
+            content: content,
+            dynamicHeight: $webViewHeight,
+            viewModel: viewModel,
+            baseFontSize: baseFontSize
+        )
             .frame(height: renderedHeight)
             .clipped()
             .overlay(alignment: .bottom) {
@@ -52,6 +58,7 @@ private struct WebView: UIViewRepresentable {
     let content: String
     @Binding var dynamicHeight: CGFloat
     @ObservedObject var viewModel: ChatViewModel
+    let baseFontSize: CGFloat
 
     func makeUIView(context: Context) -> CustomWebView {
         let contentController = WKUserContentController()
@@ -115,7 +122,7 @@ private struct WebView: UIViewRepresentable {
                 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
                 body {
                     font-family: -apple-system, system-ui, sans-serif;
-                    font-size: 17px; line-height: 1.6; color: #1A1A1A;
+                    font-size: \(baseFontSize)px; line-height: 1.6; color: #1A1A1A;
                     margin: 0; padding: 0; background-color: transparent; width: 100%;
                     overflow-x: hidden; text-align: left;
                     -webkit-user-select: text !important; user-select: text !important;

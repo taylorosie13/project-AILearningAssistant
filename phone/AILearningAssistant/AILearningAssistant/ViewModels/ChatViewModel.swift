@@ -138,12 +138,11 @@ class ChatViewModel: ObservableObject {
     }
 
     private func presentError(_ error: Error, fallback: String) {
-        let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedMessage = message.isEmpty ? fallback : message
+        let resolvedMessage = NetworkError.userFacingMessage(from: error, fallback: fallback)
         let errorID = makeErrorID()
         activeAlert = AlertState(
             title: alertTitle(for: fallback, message: resolvedMessage),
-            message: "\(resolvedMessage)\n错误ID：\(errorID)"
+            message: resolvedMessage
         )
         print("[\(errorID)] \(fallback): \(error)")
     }
@@ -996,7 +995,7 @@ class ChatViewModel: ObservableObject {
     }
 
     private func contextualizedUploadError(_ error: Error, fileName: String) -> Error {
-        let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = NetworkError.userFacingMessage(from: error, fallback: "文件上传失败，请稍后再试。")
         let safeFileName = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !safeFileName.isEmpty else { return error }
